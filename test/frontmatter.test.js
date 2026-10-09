@@ -70,6 +70,24 @@ test("rejects an unterminated flow list", () => {
   assert.throws(() => parseCard("---\nname: x\ntriggers: [a, b\n---\n"), /unterminated flow list/);
 });
 
+test("a boolean field round-trips as a YAML boolean, not a quoted string", () => {
+  // Silently quoting it would lose the flag: the reader would hand back the string "true".
+  const on = parseCard(serializeCard({ name: "sample", publish: true, revision: 1 }, "正文"));
+  assert.equal(on.fields.publish, true);
+  assert.equal(typeof on.fields.publish, "boolean");
+
+  const off = parseCard(serializeCard({ name: "sample", publish: false, revision: 1 }, "正文"));
+  assert.equal(off.fields.publish, false);
+
+  const raw = serializeCard({ name: "sample", publish: true, revision: 1 }, "正文");
+  assert.match(raw, /^publish: true$/m, "the written line must be an unquoted boolean");
+});
+
+test("a quoted boolean stays a string, because a hand edit means the text", () => {
+  const { fields } = parseCard("---\nname: x\npublish: \"true\"\n---\n\n正文");
+  assert.equal(fields.publish, "true");
+});
+
 test("listField tolerates a hand-written single string", () => {
   assert.deepEqual(listField({ triggers: "只有一个" }, "triggers"), ["只有一个"]);
   assert.deepEqual(listField({}, "triggers"), []);

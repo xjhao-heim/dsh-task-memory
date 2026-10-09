@@ -86,6 +86,10 @@ window.__ModuleLoader__.load({
 .tm-badge{font-size:11px;border-radius:6px;padding:1px 6px}
 .tm-badge-warn{color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .tm-badge-err{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.tm-badge-pub{color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.tm-check{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+.tm-check input{width:14px;height:14px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}
+.tm-hint{color:var(--dsw-alias-label-tertiary);font-size:12px}
 .tm-empty{padding:32px 8px;color:var(--dsw-alias-label-secondary);text-align:center;line-height:22px}
 .tm-notice{margin:12px 0;padding:10px 12px;border-radius:8px;font-size:13px;line-height:20px}
 .tm-notice-err{color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-state-error-primary)}
@@ -349,6 +353,7 @@ window.__ModuleLoader__.load({
             triggers: (payload.card.triggers ?? []).join(', '),
             tags: (payload.card.tags ?? []).join(', '),
             status: payload.card.status,
+            published: payload.card.published === true,
             body: payload.body,
           });
           setNotice(null);
@@ -361,7 +366,7 @@ window.__ModuleLoader__.load({
 
       const newCard = () => {
         setSelected(null);
-        setDraft({ name: '', description: '', whenToUse: '', triggers: '', tags: '', status: 'verified', body: '' });
+        setDraft({ name: '', description: '', whenToUse: '', triggers: '', tags: '', status: 'verified', published: false, body: '' });
         setNotice(null);
       };
 
@@ -381,6 +386,7 @@ window.__ModuleLoader__.load({
               triggers: splitList(draft.triggers),
               tags: splitList(draft.tags),
               status: draft.status,
+              published: draft.published === true,
               body: draft.body,
             },
           });
@@ -469,6 +475,7 @@ window.__ModuleLoader__.load({
           },
             h('div', { className: 'tm-card-top' },
               h('span', { className: 'tm-name' }, card.name),
+              card.published ? h('span', { className: 'tm-badge tm-badge-pub' }, '技能') : null,
               card.status !== 'verified' ? h('span', { className: 'tm-badge tm-badge-warn' }, card.status) : null,
               card.problem !== null ? h('span', { className: 'tm-badge tm-badge-err' }, '读取失败') : null),
             h('div', { className: 'tm-desc' }, card.description),
@@ -494,6 +501,15 @@ window.__ModuleLoader__.load({
               options: ['verified', 'draft', 'stale'].map((status) => ({ value: status, label: status })),
               onChange: (next) => setDraft({ ...draft, status: next }),
             }))),
+        h('div', { className: 'tm-field' },
+          h('label', { className: 'tm-check' },
+            h('input', {
+              type: 'checkbox',
+              checked: draft.published === true,
+              onChange: (event) => setDraft({ ...draft, published: event.target.checked }),
+            }),
+            h('span', {}, '作为技能上架'),
+            h('span', { className: 'tm-hint' }, '上架后会出现在技能中心；不上架也能被任务记忆索引和工具检索到。'))),
         h('div', { className: 'tm-field' },
           h('label', { className: 'tm-label' }, '描述（索引里显示的这一行）'),
           h('input', {

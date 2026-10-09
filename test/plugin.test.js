@@ -113,7 +113,7 @@ test("the catalog exposes one line per card and no body", async () => {
   const { ctx, tools, provider } = host();
   const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
   apply(ctx, {});
-  await call(tools, "task_memory_save", CARD, cwd);
+  await call(tools, "task_memory_save", { ...CARD, publish: true }, cwd);
 
   const candidates = await provider().list({ cwd });
   assert.equal(candidates.length, 1);
@@ -129,6 +129,58 @@ test("the catalog exposes one line per card and no body", async () => {
   assert.equal(loaded.resourceBase.kind, "directory");
 });
 
+test("an unpublished card stays out of the skill catalog but remains usable", async () => {
+  const { ctx, tools, provider } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+  await call(tools, "task_memory_save", CARD, cwd);
+
+  // Cards are this plugin's own storage. The harness skill catalog is the curated surface the Skill
+  // Center page lists, so publishing every card would turn it into a dumping ground for memories.
+  assert.deepEqual(await provider().list({ cwd }), [], "a plain save must not publish");
+
+  // It is still a real card: reachable through the tools and through the injected index.
+  assert.match(await call(tools, "task_memory_index", {}, cwd), /qt-tableview-flicker/);
+  assert.match(await call(tools, "task_memory_load", { name: CARD.name }, cwd), /开启 uniformRowHeights/);
+});
+
+test("publishing is opt-in and sticky until explicitly withdrawn", async () => {
+  const { ctx, tools, provider } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+  await call(tools, "task_memory_save", CARD, cwd);
+  assert.deepEqual(await provider().list({ cwd }), []);
+
+  await call(tools, "task_memory_save", { ...CARD, mode: "update", publish: true }, cwd);
+  assert.equal((await provider().list({ cwd })).length, 1);
+
+  // An ordinary later update must not silently withdraw it.
+  await call(tools, "task_memory_save", { ...CARD, mode: "update", body: "## 做法\n\n修订后的做法。" }, cwd);
+  assert.equal((await provider().list({ cwd })).length, 1, "publication survives an ordinary update");
+
+  await call(tools, "task_memory_save", { ...CARD, mode: "update", publish: false }, cwd);
+  assert.deepEqual(await provider().list({ cwd }), [], "withdrawing is explicit");
+});
+
+test("the save result tells the model whether the card was published", async () => {
+  const { ctx, tools } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+
+  const plain = await call(tools, "task_memory_save", CARD, cwd);
+  assert.match(plain, /未上架/);
+  assert.match(plain, /技能中心/);
+
+  const published = await call(tools, "task_memory_save", {
+    name: "published-card",
+    description: "rebase 冲突解决流程",
+    triggers: ["rebase"],
+    body: "## 做法\n\n先把冲突文件列出来。",
+    publish: true,
+  }, cwd);
+  assert.match(published, /已上架/);
+});
+
 test("the catalog is capped and keeps the most-used cards", async () => {
   const { ctx, tools, provider } = host();
   const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
@@ -142,7 +194,9 @@ test("the catalog is capped and keeps the most-used cards", async () => {
     { name: "card-ssh", description: "SSH 跳板机端口转发", triggers: ["跳板机"] },
   ];
   for (const card of distinct) {
-    await call(tools, "task_memory_save", { ...card, body: `## 做法\n\n${card.description}的做法。` }, cwd);
+    await call(tools, "task_memory_save", {
+      ...card, publish: true, body: `## 做法\n\n${card.description}的做法。`,
+    }, cwd);
   }
   // Load two of them so they outrank the third by hit count.
   for (const name of ["card-git", "card-png"]) {

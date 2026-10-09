@@ -14,3 +14,4 @@ import "./match.test.js";
 import "./plugin.test.js";
 import "./panel.test.js";
 import "./dropdown.test.js";
+import "./capture.test.js";
