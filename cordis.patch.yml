@@ -1,0 +1,4 @@
+# Add the workspace task-memory capability to the profile composition.
+- insert:
+    - id: dsh-task-memory
+      name: dsh-task-memory
