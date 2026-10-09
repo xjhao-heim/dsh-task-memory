@@ -1,0 +1,5 @@
+{
+  "meta": {
+    "description": "Workspace-scoped task memory. Reusable procedures are stored one card per task, the card catalog is the index, and card bodies load on demand."
+  }
+}
