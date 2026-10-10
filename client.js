@@ -28,8 +28,11 @@ window.__ModuleLoader__.load({
     const CSS_ID = 'dsh-task-memory/panel.css';
 
     const CSS = `
-.tm-root{height:100%;overflow:auto;padding:24px 28px 48px;box-sizing:border-box;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font-size:14px}
-.tm-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:8px}
+/* Two-column shell: a fixed-width list on the left, the detail pane on the right.
+ * The detail used to sit below the list, which meant scrolling past every card to read one — the
+ * worse the memory grew, the further away it was. Splitting the columns keeps both in view. */
+.tm-root{height:100%;display:flex;flex-direction:column;box-sizing:border-box;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);font-size:14px;overflow:hidden}
+.tm-head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;padding:20px 24px 0;flex:none}
 .tm-titles{flex:1;min-width:240px}
 .tm-h1{font-size:20px;font-weight:600;line-height:28px;margin:0}
 .tm-sub{color:var(--dsw-alias-label-secondary);margin-top:4px;font-size:13px;line-height:20px;word-break:break-all}
@@ -41,12 +44,12 @@ window.__ModuleLoader__.load({
 .tm-btn-primary{background:var(--dsw-alias-button-primary-fill);border-color:transparent;color:var(--dsw-alias-label-primary-foreground)}
 .tm-btn-primary:hover{background:var(--dsw-alias-button-primary-hover)}
 .tm-btn-danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-border-l3)}
-.tm-toolbar{display:flex;gap:8px;align-items:center;margin:16px 0;flex-wrap:wrap}
+.tm-toolbar{display:flex;gap:8px;align-items:center;margin:16px 0 0;padding:0 24px;flex:none;flex-wrap:wrap}
 .tm-input,.tm-textarea{box-sizing:border-box;border:0.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md);padding:6px 10px;font:inherit;font-size:13px}
-.tm-input{min-width:240px;flex:1;height:32px}
+.tm-input{min-width:200px;flex:1;height:32px}
 .tm-input:focus,.tm-textarea:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
 .tm-input::placeholder{color:var(--dsw-alias-label-dimmed)}
-.tm-textarea{width:100%;min-height:260px;font-family:var(--ds-font-family-code);font-size:13px;line-height:20px;resize:vertical}
+.tm-textarea{width:100%;min-height:280px;font-family:var(--ds-font-family-code);font-size:13px;line-height:20px;resize:vertical}
 /* Custom dropdown.
  * A native <select> cannot be themed: its popup list is drawn by Chromium/OS and no CSS reaches
  * it, so it stayed white-on-dark while everything around it followed the theme. This reimplements
@@ -72,32 +75,64 @@ window.__ModuleLoader__.load({
 .tm-dd-check{flex:none;width:14px;height:14px;color:var(--dsw-alias-label-primary)}
 .tm-dd-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .tm-dd-empty{padding:6px 8px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
-.tm-field{margin-bottom:12px}
-.tm-label{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
-.tm-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-.tm-card{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:12px 14px;background:var(--dsw-alias-bg-base);cursor:pointer}
+.tm-notice{margin:12px 24px 0;padding:10px 12px;border-radius:8px;font-size:13px;line-height:20px;flex:none}
+.tm-notice-err{color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-state-error-primary)}
+.tm-notice-ok{color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l3)}
+/* The columns. */
+.tm-columns{flex:1;min-height:0;display:flex;gap:0;margin-top:16px;border-top:0.5px solid var(--dsw-alias-border-l2)}
+.tm-list-col{flex:none;width:320px;min-width:0;display:flex;flex-direction:column;border-right:0.5px solid var(--dsw-alias-border-l2);overflow-y:auto;padding:12px}
+.tm-detail-col{flex:1;min-width:0;overflow-y:auto;padding:20px 24px 48px}
+.tm-detail-empty{height:100%;display:flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);font-size:13px;text-align:center;line-height:22px;padding:24px}
+.tm-list{display:flex;flex-direction:column;gap:6px}
+.tm-card{border:0.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);padding:10px 12px;background:var(--dsw-alias-bg-base);cursor:pointer}
 .tm-card:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.tm-card-active{border-color:var(--dsw-alias-state-business-primary)}
-.tm-card-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.tm-name{font-family:var(--ds-font-family-code);font-size:13px;font-weight:600}
-.tm-desc{margin-top:4px;line-height:20px}
-.tm-meta{margin-top:6px;font-size:12px;color:var(--dsw-alias-label-secondary);display:flex;gap:12px;flex-wrap:wrap}
-.tm-tag{display:inline-block;border-radius:6px;padding:1px 6px;font-size:11px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);margin-right:4px}
-.tm-badge{font-size:11px;border-radius:6px;padding:1px 6px}
+.tm-card-active{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover)}
+.tm-card-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tm-name{font-family:var(--ds-font-family-code);font-size:12px;font-weight:600;word-break:break-all}
+.tm-desc{margin-top:4px;line-height:18px;font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tm-meta{margin-top:6px;font-size:11px;color:var(--dsw-alias-label-secondary);display:flex;gap:8px;flex-wrap:wrap}
+.tm-tag{display:inline-block;border-radius:6px;padding:1px 5px;font-size:11px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary);margin-right:4px}
+.tm-badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+.tm-badge{font-size:11px;border-radius:6px;padding:1px 6px;line-height:16px}
+.tm-badge-ok{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}
 .tm-badge-warn{color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-interactive-bg-hover)}
-.tm-badge-err{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .tm-badge-pub{color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover)}
 .tm-check{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
 .tm-check input{width:14px;height:14px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}
 .tm-hint{color:var(--dsw-alias-label-tertiary);font-size:12px}
-.tm-empty{padding:32px 8px;color:var(--dsw-alias-label-secondary);text-align:center;line-height:22px}
-.tm-notice{margin:12px 0;padding:10px 12px;border-radius:8px;font-size:13px;line-height:20px}
-.tm-notice-err{color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-state-error-primary)}
-.tm-notice-ok{color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l3)}
-.tm-editor{margin-top:16px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:16px}
+.tm-empty{padding:32px 8px;color:var(--dsw-alias-label-secondary);text-align:center;line-height:22px;font-size:13px}
+.tm-field{margin-bottom:12px}
+.tm-label{display:block;font-size:12px;color:var(--dsw-alias-label-secondary);margin-bottom:4px}
+.tm-detail-head{display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.tm-detail-title{font-family:var(--ds-font-family-code);font-size:16px;font-weight:600;margin:0;word-break:break-all;flex:1;min-width:200px}
 .tm-row{display:flex;gap:8px;flex-wrap:wrap}
 .tm-row>*{flex:1;min-width:180px}
 .tm-icon{width:18px;height:18px;display:block}
+/* Date range and the "which days hold cards" strip.
+ * A native date input's calendar popup is drawn by Chromium, so it cannot be themed — the same
+ * limitation as <select>. The information a calendar would carry is therefore surfaced beside the
+ * input as a row of clickable day chips. */
+.tm-range{gap:8px;flex-wrap:wrap}
+.tm-range-label{font-size:12px;color:var(--dsw-alias-label-secondary)}
+.tm-date{min-width:0;width:auto;flex:0 0 auto;height:32px;padding:4px 8px}
+.tm-range-hint{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.tm-days{display:flex;gap:4px;flex-wrap:wrap;padding:0 24px;margin-top:8px;flex:none;max-height:76px;overflow-y:auto}
+.tm-day{display:inline-flex;align-items:baseline;gap:4px;border:0.5px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);border-radius:var(--dsw-radius-sm);padding:2px 6px;font:inherit;font-size:11px;cursor:pointer}
+.tm-day:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.tm-day-active{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
+.tm-day-count{color:var(--dsw-alias-state-business-primary);font-weight:600}
+/* Recency group heading inside the list. */
+.tm-group{display:flex;align-items:baseline;gap:6px;padding:10px 2px 2px;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.tm-group:first-child{padding-top:2px}
+.tm-group-name{font-weight:600}
+.tm-group-count{opacity:.8}
+/* Settings section: a plain form on the settings page's own surface. */
+.tm-settings{overflow-y:auto;padding:24px 28px 48px}
+.tm-settings-body{max-width:640px;margin-top:8px}
+.tm-h2{font-size:14px;font-weight:600;margin:20px 0 4px}
+.tm-num{flex:1;min-width:120px}
+.tm-checks{display:flex;gap:16px;flex-wrap:wrap;margin-top:6px}
+.tm-settings-actions{margin-top:24px;align-items:center}
 `;
 
     /**
@@ -145,6 +180,36 @@ window.__ModuleLoader__.load({
         throw new Error(payload?.error ?? `请求失败（HTTP ${response.status}）`);
       }
       return payload;
+    }
+
+    /**
+     * Chinese labels for the card lifecycle states.
+     *
+     * The stored values stay the English identifiers the tool schema and frontmatter use; only what
+     * the panel *shows* is translated, so a card stays readable by the model while the UI stays
+     * readable by the user.
+     */
+    const STATUS_LABELS = { verified: '已确认', draft: '草稿', stale: '可能过时' };
+
+    /**
+     * Render a card status for display.
+     * @param status - stored status identifier.
+     * @returns the Chinese label, falling back to the raw value.
+     */
+    function statusLabel(status) {
+      return STATUS_LABELS[status] ?? status;
+    }
+
+    /** Chinese labels for the recency tiers, mirroring the host's own table. */
+    const TIER_LABELS = { recent: '近期', past: '之前', old: '很久之前', ancient: '远古', forgotten: '遗忘' };
+
+    /**
+     * Render a recency tier for display.
+     * @param tier - tier identifier.
+     * @returns the Chinese label, falling back to the raw value.
+     */
+    function statusTierLabel(tier) {
+      return TIER_LABELS[tier] ?? tier;
     }
 
     /**
@@ -268,6 +333,165 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The settings page section.
+     *
+     * The host's automatic config forms only render fields a plugin declares through a schemastery
+     * `Config` with `.volatile()` markers. This plugin deliberately has no schema — it is a plain JS
+     * package installed by link, with no build step — so it ships its own section and reads/writes
+     * the same configuration through its own routes. One source of truth either way: the values the
+     * loader passes to `apply`.
+     *
+     * @returns the section element.
+     */
+    function SettingsSection() {
+      const [settings, setSettings] = React.useState(null);
+      const [configPath, setConfigPath] = React.useState('');
+      const [busy, setBusy] = React.useState(false);
+      const [notice, setNotice] = React.useState(null);
+
+      const fail = (error) => setNotice({ kind: 'err', text: error instanceof Error ? error.message : String(error) });
+
+      React.useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          try {
+            const payload = await call('/api/task-memory/settings');
+            // The host returns `effective` — every parameter with its value, defaults included — and
+            // fills any missing one into the local file on the way, so this one response is also what
+            // makes the file a complete description of the configuration.
+            if (!cancelled) {
+              setSettings(payload.effective ?? payload.settings);
+              setConfigPath(payload.configPath ?? '');
+            }
+          } catch (error) {
+            if (!cancelled) fail(error);
+          }
+        })();
+        return () => {
+          cancelled = true;
+        };
+      }, []);
+
+      const save = async (patch) => {
+        setBusy(true);
+        try {
+          const payload = await call('/api/task-memory/settings', { body: patch });
+          setSettings(payload.effective ?? payload.settings);
+          setConfigPath(payload.configPath ?? '');
+          setNotice({ kind: 'ok', text: payload.message ?? '已保存。' });
+        } catch (error) {
+          fail(error);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      if (settings === null) {
+        return h('div', { className: 'tm-root tm-settings' },
+          h('div', { className: 'tm-empty' }, notice === null ? '读取中…' : notice.text));
+      }
+
+      /**
+       * One number input bound to a nested or top-level settings field.
+       *
+       * @param path - `[key]` for a top-level field, `['tierDays', 'past']` for a nested one.
+       * @param label - field label.
+       * @param hint - explanatory line under the field.
+       * @returns the field element.
+       */
+      const numberField = (path, label, hint) => {
+        const [key, sub] = path;
+        const value = sub === undefined ? settings[key] : settings[key]?.[sub];
+        return h('div', { className: 'tm-field' },
+          h('label', { className: 'tm-label' }, label),
+          h('input', {
+            className: 'tm-input tm-num',
+            type: 'number',
+            min: 1,
+            value: value ?? '',
+            disabled: busy,
+            onChange: (event) => {
+              const next = Number(event.target.value);
+              setSettings(sub === undefined
+                ? { ...settings, [key]: next }
+                : { ...settings, [key]: { ...(settings[key] ?? {}), [sub]: next } });
+            },
+          }),
+          h('div', { className: 'tm-hint' }, hint));
+      };
+
+      return h('div', { className: 'tm-root tm-settings' },
+        h('div', { className: 'tm-head' },
+          h('div', { className: 'tm-titles' },
+            h('h1', { className: 'tm-h1' }, '任务记忆'),
+            h('div', { className: 'tm-sub' }, '这些设置写入 profile 的插件配置，重启 Harness 后生效。'))),
+        notice === null ? null : h('div', {
+          className: `tm-notice ${notice.kind === 'err' ? 'tm-notice-err' : 'tm-notice-ok'}`,
+        }, notice.text),
+        h('div', { className: 'tm-settings-body' },
+          h('h2', { className: 'tm-h2' }, '面板默认显示哪些档位'),
+          h('div', { className: 'tm-hint' }, '打开记忆面板时默认勾选的档位。默认只看「近期」，避免旧卡淹没新结论。'),
+          h('div', { className: 'tm-checks' },
+            ['recent', 'past', 'old', 'ancient', 'forgotten'].map((tier) => h('label', { key: tier, className: 'tm-check' },
+              h('input', {
+                type: 'checkbox',
+                checked: (settings.defaultTiers ?? []).includes(tier),
+                disabled: busy,
+                onChange: (event) => {
+                  const current = new Set(settings.defaultTiers ?? []);
+                  if (event.target.checked) current.add(tier);
+                  else current.delete(tier);
+                  setSettings({ ...settings, defaultTiers: [...current] });
+                },
+              }),
+              h('span', {}, statusTierLabel(tier))))),
+
+          h('h2', { className: 'tm-h2' }, '档位边界（天）'),
+          h('div', { className: 'tm-hint' }, '必须递增，否则某一档永远无法到达。'),
+          h('div', { className: 'tm-row' },
+            numberField(['tierDays', 'past'], '近期 → 之前', '超过这个天数进入「之前」'),
+            numberField(['tierDays', 'old'], '之前 → 很久之前', ''),
+            numberField(['tierDays', 'ancient'], '很久之前 → 远古', ''),
+            numberField(['tierDays', 'forgotten'], '远古 → 遗忘', '超过这里就只计数、不再列出')),
+
+          h('h2', { className: 'tm-h2' }, '索引与正文'),
+          h('div', { className: 'tm-row' },
+            numberField(['maxCatalogCards'], '注入索引的卡片上限', '索引里最多列多少张卡'),
+            numberField(['maxBodyChars'], '单张卡正文上限', '超出会截断并给出文件路径')),
+
+          h('h2', { className: 'tm-h2' }, '自动落卡'),
+          h('label', { className: 'tm-check' },
+            h('input', {
+              type: 'checkbox',
+              checked: settings.autoCapture !== false,
+              disabled: busy,
+              onChange: (event) => setSettings({ ...settings, autoCapture: event.target.checked }),
+            }),
+            h('span', {}, '回合结束时自动追问是否落卡'),
+            h('span', { className: 'tm-hint' }, '关掉后只能由你明确要求才记录')),
+
+          h('div', { className: 'tm-actions tm-settings-actions' },
+            h('button', {
+              className: 'tm-btn tm-btn-primary',
+              disabled: busy,
+              onClick: () => void save({
+                defaultTiers: settings.defaultTiers,
+                tierDays: settings.tierDays,
+                maxCatalogCards: settings.maxCatalogCards,
+                maxBodyChars: settings.maxBodyChars,
+                autoCapture: settings.autoCapture,
+                includeSystemPrompt: settings.includeSystemPrompt,
+              }),
+            }, '保存'),
+            h('button', {
+              className: 'tm-btn',
+              disabled: busy,
+              onClick: () => void save({ reset: true }),
+            }, '恢复默认'),
+            h('span', { className: 'tm-hint' }, configPath === '' ? '' : `设置文件：${configPath}`)),
+        ));    }
+
+    /**
      * The sidebar entry: a book glyph.
      * @param props - slot props (size and active state).
      * @returns the icon element.
@@ -296,9 +520,49 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [notice, setNotice] = React.useState(null);
       const [loading, setLoading] = React.useState(true);
+      // Tier filter: a set of selected tiers. Seeded from the host's configured default so the
+      // panel opens showing what the deployment decided is worth seeing first.
+      const [tiers, setTiers] = React.useState(null);
+      /**
+       * The tier filter, expressed as one choice.
+       *
+       * A set of toggles would be more expressive, but the common cases are "the default" and "give
+       * me everything, including the old stuff", and a single dropdown states those unambiguously
+       * without asking the reader to reason about a combination of checkboxes.
+       */
+      const [filterMode, setFilterMode] = React.useState('default');
+      // Date range. Empty means "not restricted"; the pickers seed from the real data's span so the
+      // control reflects what exists instead of a hard-coded default.
+      const [from, setFrom] = React.useState('');
+      const [to, setTo] = React.useState('');
+      const [bounds, setBounds] = React.useState({ min: '', max: '' });
+      const [days, setDays] = React.useState([]);
 
       const fail = (error) => setNotice({ kind: 'err', text: error instanceof Error ? error.message : String(error) });
       const done = (text) => setNotice({ kind: 'ok', text });
+
+      /**
+       * The tier filter choices.
+       *
+       * `default` defers to the deployment's configured default (normally the recent tier alone), so
+       * the panel's opening view is a policy, not a hard-coded guess.
+       */
+      const filterModes = [
+        { value: 'default', label: '默认（近期）' },
+        { value: 'all', label: '全部档位' },
+        { value: 'recent', label: '仅近期' },
+        { value: 'past', label: '仅之前' },
+        { value: 'old', label: '仅很久之前' },
+        { value: 'ancient', label: '仅远古' },
+        { value: 'forgotten', label: '仅遗忘' },
+      ];
+
+      /** Which tiers a mode selects; `default` resolves through state seeded by the host. */
+      const tiersForMode = (mode) => {
+        if (mode === 'all') return ['recent', 'past', 'old', 'ancient', 'forgotten'];
+        if (mode === 'default') return tiers === null ? [] : [...tiers];
+        return [mode];
+      };
 
       React.useEffect(() => {
         let cancelled = false;
@@ -326,8 +590,26 @@ window.__ModuleLoader__.load({
         if (workspace === '') return;
         setBusy(true);
         try {
-          const payload = await call('/api/task-memory/cards', { query: { workspace } });
+          // The filters are sent to the host, not applied in the browser: the list is capped there,
+          // so filtering locally would hide cards that a query was supposed to surface.
+          const payload = await call('/api/task-memory/cards', {
+            query: {
+              workspace,
+              tiers: tiersForMode(filterMode).join(','),
+              from,
+              to,
+            },
+          });
           setCards(Array.isArray(payload.cards) ? payload.cards : []);
+          // The first response for a workspace supplies the filter defaults: which tiers the
+          // deployment opens on, and the span of dates that actually exist.
+          if (tiers === null && Array.isArray(payload.defaultTiers)) setTiers(new Set(payload.defaultTiers));
+          if (Array.isArray(payload.tierDays)) setDays(payload.tierDays);
+          if (payload.dateBounds !== undefined) {
+            setBounds(payload.dateBounds);
+            setFrom((current) => (current === '' ? payload.dateBounds.min ?? '' : current));
+            setTo((current) => (current === '' ? payload.dateBounds.max ?? '' : current));
+          }
           setNotice(null);
         } catch (error) {
           fail(error);
@@ -335,7 +617,7 @@ window.__ModuleLoader__.load({
           setBusy(false);
           setLoading(false);
         }
-      }, [workspace]);
+      }, [workspace, filterMode, tiers, from, to]);
 
       React.useEffect(() => {
         void reload();
@@ -391,7 +673,7 @@ window.__ModuleLoader__.load({
             },
           });
           done(payload.outcome === 'created' ? `已创建 ${payload.card.name}` : `已保存 ${payload.card.name}`);
-          setSelected({ card: payload.card, body: draft.body, raw: '', assets: [], path: '' });
+          setSelected({ card: payload.card, body: draft.body });
           await reload();
         } catch (error) {
           fail(error);
@@ -402,7 +684,7 @@ window.__ModuleLoader__.load({
 
       const remove = async () => {
         if (draft === null || selected === null) return;
-        if (!window.confirm(`删除记忆卡 ${draft.name}？这会连同它的 assets 目录一起删除。`)) return;
+        if (!window.confirm(`删除记忆卡 ${draft.name}？它会连同卡片正文、附带的文件一起删除，无法恢复。`)) return;
         setBusy(true);
         try {
           await call('/api/task-memory/delete', { body: { workspace, name: draft.name } });
@@ -435,12 +717,102 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /**
+       * Review and clean up the forgotten tier.
+       *
+       * Forgotten cards are never removed automatically — a memory that deletes itself is worse than
+       * one that gets crowded — so cleanup is a two-step act by a human: list them, then confirm.
+       */
+      const reviewForgotten = async () => {
+        setBusy(true);
+        try {
+          const payload = await call('/api/task-memory/forgotten', { query: { workspace } });
+          const rows = Array.isArray(payload.forgotten) ? payload.forgotten : [];
+          if (rows.length === 0) {
+            done('没有遗忘档的卡片。');
+            return;
+          }
+          const list = rows.map((row) => `· ${row.name}（${row.ageLabel}）`).join('\n');
+          if (!window.confirm(`遗忘档（超过一年未用）共 ${rows.length} 张：\n\n${list}\n\n删除它们？此操作不可撤销。`)) return;
+          const purged = await call('/api/task-memory/purge', {
+            body: { workspace, names: rows.map((row) => row.name) },
+          });
+          done(`已清理 ${purged.removed.length} 张${purged.failed.length > 0 ? `，${purged.failed.length} 张失败` : ''}。`);
+          setSelected(null);
+          setDraft(null);
+          await reload();
+        } catch (error) {
+          fail(error);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      /**
+       * Import the previous file-backed memory of the selected workspace.
+       *
+       * Three steps with three different risks, so each one is shown before it happens: preview
+       * (touches nothing), import (writes), and deleting the source files (irreversible, and never
+       * offered before a successful import).
+       */
+      const migrateLegacy = async () => {
+        setBusy(true);
+        try {
+          const preview = await call('/api/task-memory/legacy/preview', { query: { workspace } });
+          if (preview.found !== true) {
+            done('这个工作区没有旧版记忆文件（没有 .dsh/task-memory/notes 目录）。');
+            return;
+          }
+          const { totals } = preview;
+          if (totals.cards === 0) {
+            done(`找到旧版目录但没有可导入的卡片${totals.unreadable > 0 ? `（${totals.unreadable} 张读取失败）` : ''}。`);
+            return;
+          }
+          const lines = [
+            `工作区：${workspace}`,
+            `旧版位置：${preview.notes}`,
+            '',
+            `将导入 ${totals.cards} 张卡片（新建 ${totals.create}，已存在 ${totals.conflict}），附件 ${totals.assets} 个。`,
+          ];
+          if (totals.unreadable > 0) lines.push(`另有 ${totals.unreadable} 张无法解析，会被跳过。`);
+          lines.push('', '已存在的同名卡片不会被覆盖。继续导入？');
+          if (!window.confirm(lines.join('\n'))) return;
+
+          const imported = await call('/api/task-memory/legacy/import', {
+            body: { workspace, overwrite: false },
+          });
+          const summary = `已导入 ${imported.imported.length} 张`
+            + (imported.skipped.length > 0 ? `，跳过 ${imported.skipped.length} 张（已存在）` : '')
+            + (imported.failed.length > 0 ? `，失败 ${imported.failed.length} 张` : '')
+            + '。';
+          await reload();
+
+          // Deleting the source is a separate confirmation, and only after the import reported what
+          // it actually wrote — the user is agreeing to lose files, so they see the result first.
+          const sources = (imported.sources ?? []).map((path) => `· ${path}`).join('\n');
+          if (imported.imported.length > 0 && window.confirm(
+            `${summary}\n\n数据库里已经有这些卡片了。要删除旧版文件吗？\n\n${sources}\n\n此操作不可撤销。`,
+          )) {
+            const removed = await call('/api/task-memory/legacy/remove', { body: { workspace } });
+            done(`${summary} 已删除旧版文件（${removed.removed.length} 项）。`);
+          } else {
+            done(`${summary} 旧版文件保留在原处。`);
+          }
+        } catch (error) {
+          fail(error);
+        } finally {
+          setBusy(false);
+        }
+      };
+
       const header = h('div', { className: 'tm-head' },
         h('div', { className: 'tm-titles' },
           h('h1', { className: 'tm-h1' }, '任务记忆'),
           h('div', { className: 'tm-sub' }, workspace === '' ? '选择工作区' : workspace)),
         h('div', { className: 'tm-actions' },
           h('button', { className: 'tm-btn', onClick: newCard, disabled: workspace === '' }, '新建卡片'),
+          h('button', { className: 'tm-btn', onClick: () => void reviewForgotten(), disabled: busy || workspace === '' }, '清理遗忘'),
+          h('button', { className: 'tm-btn', onClick: () => void migrateLegacy(), disabled: busy || workspace === '' }, '兼容旧版记忆'),
           h('button', { className: 'tm-btn', onClick: () => void reload(), disabled: busy || workspace === '' }, '刷新')));
 
       const picker = h('div', { className: 'tm-toolbar' },
@@ -455,6 +827,12 @@ window.__ModuleLoader__.load({
             setDraft(null);
           },
         }),
+        h(Dropdown, {
+          value: filterMode,
+          ariaLabel: '档位筛选',
+          options: filterModes.map((mode) => ({ value: mode.value, label: mode.label })),
+          onChange: (next) => setFilterMode(next),
+        }),
         h('input', {
           className: 'tm-input', placeholder: '检索正文…', value: query,
           onChange: (event) => setQuery(event.target.value),
@@ -462,30 +840,105 @@ window.__ModuleLoader__.load({
             if (event.key === 'Enter') void search();
           },
         }),
-        h('button', { className: 'tm-btn', onClick: () => void search(), disabled: busy || workspace === '' }, '检索'));
+        h('button', { className: 'tm-btn', onClick: () => void search(), disabled: busy || workspace === '' }, '检索'),
+        h('button', {
+          className: 'tm-btn',
+          disabled: busy || workspace === '',
+          onClick: () => {
+            setFrom(bounds.min ?? '');
+            setTo(bounds.max ?? '');
+          },
+        }, '全时段'));
+
+      // Date range. The pickers are bounded by the real span of stored dates, and each day that
+      // actually holds a card is marked — otherwise a date picker over a sparse memory is a guessing
+      // game about which days are even worth looking at.
+      const range = h('div', { className: 'tm-toolbar tm-range' },
+        h('label', { className: 'tm-range-label' }, '起'),
+        h('input', {
+          className: 'tm-input tm-date',
+          type: 'date',
+          value: from,
+          min: bounds.min ?? undefined,
+          max: bounds.max ?? undefined,
+          onChange: (event) => setFrom(event.target.value),
+          // Days that hold a card are tinted through the picker's own calendar cells, which the
+          // theme cannot reach from here; the chips below carry the same information reliably.
+          list: 'tm-date-marks',
+        }),
+        h('label', { className: 'tm-range-label' }, '止'),
+        h('input', {
+          className: 'tm-input tm-date',
+          type: 'date',
+          value: to,
+          min: bounds.min ?? undefined,
+          max: bounds.max ?? undefined,
+          onChange: (event) => setTo(event.target.value),
+        }),
+        h('span', { className: 'tm-range-hint' },
+          bounds.min === '' ? '（暂无卡片）' : `数据范围 ${bounds.min} ~ ${bounds.max}`));
+
+      // Which days hold cards, shown as a compact strip of counts. This is the "明显标记" part: a
+      // date input's calendar cannot be styled, so the information is surfaced beside it instead.
+      const dayStrip = days.length === 0 ? null : h('div', { className: 'tm-days' },
+        days.map((day) => h('button', {
+          key: day.date,
+          type: 'button',
+          className: `tm-day${from === day.date && to === day.date ? ' tm-day-active' : ''}`,
+          title: `${day.date}：${day.count} 张`,
+          onClick: () => { setFrom(day.date); setTo(day.date); },
+        }, h('span', { className: 'tm-day-date' }, day.date.slice(5)), h('span', { className: 'tm-day-count' }, String(day.count)))));
 
       const list = loading
         ? h('div', { className: 'tm-empty' }, '读取中…')
         : cards.length === 0
           ? h('div', { className: 'tm-empty' }, '这个工作区还没有任务记忆卡。', h('br'), '任务结束后，满足条件的做法会被自动记录。')
-          : h('div', { className: 'tm-list' }, cards.map((card) => h('div', {
-            key: card.name,
-            className: `tm-card${draft !== null && draft.name === card.name ? ' tm-card-active' : ''}`,
-            onClick: () => void openCard(card.name),
-          },
-            h('div', { className: 'tm-card-top' },
-              h('span', { className: 'tm-name' }, card.name),
-              card.published ? h('span', { className: 'tm-badge tm-badge-pub' }, '技能') : null,
-              card.status !== 'verified' ? h('span', { className: 'tm-badge tm-badge-warn' }, card.status) : null,
-              card.problem !== null ? h('span', { className: 'tm-badge tm-badge-err' }, '读取失败') : null),
-            h('div', { className: 'tm-desc' }, card.description),
-            h('div', { className: 'tm-meta' },
-              h('span', {}, `更新 ${card.updated || '未知'}`),
-              h('span', {}, `r${card.revision}`),
-              h('span', {}, `加载 ${card.hits} 次`),
-              (card.triggers ?? []).length > 0 ? h('span', {}, card.triggers.map((trigger) => h('span', { key: trigger, className: 'tm-tag' }, trigger))) : null))));
+          : h('div', { className: 'tm-list' }, cards.flatMap((card, position) => {
+            // Group headers are inserted where the tier changes. The list arrives already tier-sorted
+            // from the host, so this only has to notice the boundary.
+            const previous = position === 0 ? null : cards[position - 1];
+            const nodes = [];
+            if (previous === null || previous.tier !== card.tier) {
+              const count = cards.filter((row) => row.tier === card.tier).length;
+              nodes.push(h('div', { key: `head-${card.tier}`, className: 'tm-group' },
+                h('span', { className: 'tm-group-name' }, card.tierLabel),
+                h('span', { className: 'tm-group-count' }, `${count} 张`)));
+            }
+            nodes.push(h('div', {
+              key: card.name,
+              className: `tm-card${draft !== null && draft.name === card.name ? ' tm-card-active' : ''}`,
+              onClick: () => void openCard(card.name),
+            },
+              h('div', { className: 'tm-card-top' },
+                h('span', { className: 'tm-name' }, card.name)),
+              h('div', { className: 'tm-desc' }, card.description),
+              h('div', { className: 'tm-meta' },
+                h('span', {}, `${card.ageLabel}`),
+                h('span', {}, `r${card.revision}`),
+                h('span', {}, `加载 ${card.hits} 次`)),
+              h('div', { className: 'tm-badges' },
+                h('span', { className: `tm-badge ${card.status === 'verified' ? 'tm-badge-ok' : 'tm-badge-warn'}` }, statusLabel(card.status)),
+                card.published ? h('span', { className: 'tm-badge tm-badge-pub' }, '技能') : null),
+              (card.triggers ?? []).length > 0
+                ? h('div', { className: 'tm-meta' }, card.triggers.map((trigger) => h('span', { key: trigger, className: 'tm-tag' }, trigger)))
+                : null));
+            return nodes;
+          }));
 
-      const editor = draft === null ? null : h('div', { className: 'tm-editor' },
+      const editor = draft === null ? null : h('div', {},
+        h('div', { className: 'tm-detail-head' },
+          h('h2', { className: 'tm-detail-title' }, selected === null ? '新建记忆卡' : draft.name),
+          h('div', { className: 'tm-actions' },
+            h('button', { className: 'tm-btn tm-btn-primary', onClick: () => void save(), disabled: busy }, '保存'),
+            selected !== null ? h('button', { className: 'tm-btn tm-btn-danger', onClick: () => void remove(), disabled: busy }, '删除') : null)),
+        // A card is a database row, so there is no file to name here; the tier and age say where it
+        // sits in the library, which is what a path used to be read for.
+        selected !== null
+          ? h('div', { className: 'tm-sub', style: { marginBottom: '12px' } },
+            h('span', { className: 'tm-badge tm-badge-ok' }, `${selected.card.tierLabel} · ${selected.card.ageLabel}`),
+            ' ',
+            `更新于 ${selected.card.updated}`)
+          : null,
         h('div', { className: 'tm-row' },
           h('div', { className: 'tm-field' },
             h('label', { className: 'tm-label' }, '名字（kebab-case，创建后不可改）'),
@@ -498,7 +951,7 @@ window.__ModuleLoader__.load({
             h(Dropdown, {
               value: draft.status,
               ariaLabel: '状态',
-              options: ['verified', 'draft', 'stale'].map((status) => ({ value: status, label: status })),
+              options: ['verified', 'draft', 'stale'].map((status) => ({ value: status, label: statusLabel(status) })),
               onChange: (next) => setDraft({ ...draft, status: next }),
             }))),
         h('div', { className: 'tm-field' },
@@ -540,20 +993,22 @@ window.__ModuleLoader__.load({
           h('textarea', {
             className: 'tm-textarea', value: draft.body,
             onChange: (event) => setDraft({ ...draft, body: event.target.value }),
-          })),
-        h('div', { className: 'tm-actions' },
-          h('button', { className: 'tm-btn tm-btn-primary', onClick: () => void save(), disabled: busy }, '保存'),
-          selected !== null ? h('button', { className: 'tm-btn tm-btn-danger', onClick: () => void remove(), disabled: busy }, '删除') : null,
-          selected !== null && selected.path !== '' ? h('span', { className: 'tm-meta' }, selected.path) : null));
+          })));
 
       return h('div', { className: 'tm-root' },
         header,
         picker,
+        range,
+        dayStrip,
         notice === null ? null : h('div', {
           className: `tm-notice ${notice.kind === 'err' ? 'tm-notice-err' : 'tm-notice-ok'}`,
         }, notice.text),
-        list,
-        editor);
+        h('div', { className: 'tm-columns' },
+          h('div', { className: 'tm-list-col' }, list),
+          h('div', { className: 'tm-detail-col' },
+            editor === null
+              ? h('div', { className: 'tm-detail-empty' }, '从左侧选择一张记忆卡查看详情，', h('br'), '或点右上角「新建卡片」。')
+              : editor)));
     }
 
     return {
@@ -561,6 +1016,7 @@ window.__ModuleLoader__.load({
       // Exposed for tests: the dropdown carries real interaction logic (keyboard, outside click,
       // focus return), and logic nobody can drive is logic nobody has checked.
       Dropdown,
+      SettingsSection,
       apply(ctx) {
         ctx.effect(() => installStyles(), 'task-memory: panel styles');
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
@@ -573,6 +1029,15 @@ window.__ModuleLoader__.load({
           name: 'main',
           key: PANEL_ID,
         }, Panel));
+        // The settings section. The host renders its own config forms only for plugins that declare
+        // a schemastery Config with volatile fields; this plugin has no schema, so it contributes a
+        // section and reads/writes the same configuration through its own routes.
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'task-memory',
+          order: 60,
+          label: () => '任务记忆',
+        }, SettingsSection));
       },
     };
   },

@@ -14,12 +14,12 @@
  *   Copy-Item test\integration.cordis.mjs "$env:DSH_PROFILE_DIR\node_modules\" -Force
  *   node "$env:DSH_PROFILE_DIR\node_modules\integration.cordis.mjs"
  *
- * Verified output: 22/22 checks pass (registration, behavior through the real registry, turn-end
- * capture through the real event dispatcher, disposal).
+ * Verified: every check passes (registration, behavior through the real registry, turn-end capture
+ * through the real event dispatcher, disposal).
  */
 
 import { Context } from "@deepseek-ai/cordis";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apply, inject, name } from "dsh-task-memory";
@@ -36,7 +36,24 @@ const check = (label, condition, detail = "") => {
 const app = new Context();
 const tools = new Map();
 const prompts = [];
-const skills = { providers: [], registerProvider(create) { const p = create({ signal: new AbortController().signal, invalidate() {} }); this.providers.push(p); return () => { this.providers = this.providers.filter((x) => x !== p); }; } };
+const skills = {
+  providers: [],
+  // Record invalidations: this is the call that tells the registry its catalog changed, and a
+  // missed call means a publish never reaches the Skill Center.
+  invalidations: 0,
+  registerProvider(create) {
+    const controller = new AbortController();
+    const provider = create({
+      signal: controller.signal,
+      invalidate() { skills.invalidations += 1; },
+    });
+    skills.providers.push(provider);
+    return () => {
+      controller.abort();
+      skills.providers = skills.providers.filter((item) => item !== provider);
+    };
+  },
+};
 const routes = new Map();
 
 app.provide("tools", { register: (definition) => { tools.set(definition.name, definition); return () => tools.delete(definition.name); } });
@@ -63,12 +80,15 @@ const fiber = app.plugin({ name, apply, inject }, {});
 await fiber;
 
 console.log("\nregistrations:");
-check("four tools registered", tools.size === 4, `got ${tools.size}: ${[...tools.keys()].join(",")}`);
+check("five tools registered", tools.size === 5, `got ${tools.size}: ${[...tools.keys()].join(",")}`);
 check("one skill provider registered", skills.providers.length === 1);
 check("one prompt section registered", prompts.length === 1);
-check("six panel routes registered", routes.size === 6, `got ${routes.size}`);
+check("twelve panel routes registered", routes.size === 12, `got ${routes.size}`);
 check("turn-stopping listener registered", (registered.get("agent/turn-stopping") ?? []).length >= 1);
 check("agent/created listener registered", (registered.get("agent/created") ?? []).length >= 1);
+
+// Point the database at a throwaway file so this run cannot touch the real memory store.
+process.env.DSH_HOME = await mkdtemp(join(tmpdir(), "task-memory-cordis-home-"));
 
 const cwd = await mkdtemp(join(tmpdir(), "task-memory-cordis-"));
 const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal };
@@ -77,8 +97,9 @@ console.log("\nbehavior through the real registry:");
 const save = tools.get("task_memory_save");
 const saved = await save.execute({ name: "cordis-card", description: "真实运行时卡片", body: "## 做法\n\n在真实 Cordis 下写入。", triggers: ["真实运行时"] }, exec);
 check("save creates a card", /已创建记忆卡/.test(saved.text), saved.text.split("\n")[0]);
-check("card file exists on disk", (await readdir(join(cwd, ".dsh", "task-memory", "notes"))).includes("cordis-card"));
-check("a plain save reports the card is not published", /未上架/.test(saved.text));
+check("the card is readable back through the registry",
+  /在真实 Cordis 下写入/.test((await tools.get("task_memory_load").execute({ name: "cordis-card" }, exec)).text));
+check("save reports the card is not published", /未上架/.test(saved.text));
 
 // The card must NOT reach the harness skill catalog: that catalog feeds the Skill Center page,
 // which lists human-curated skills, not this plugin's internal memory.
@@ -104,6 +125,17 @@ await handler({ url: `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)
 check("panel route answers ok:true", captured[1]?.ok === true, JSON.stringify(captured[1]).slice(0, 120));
 check("panel route returns the card", captured[1]?.cards?.[0]?.name === "cordis-card");
 check("panel route reports the published flag", captured[1]?.cards?.[0]?.published === true);
+
+// A write must invalidate the skill catalog. `control.invalidate()` bumps the registry revision,
+// which is part of the registry's cache key, so the next snapshot re-reads this provider instead of
+// serving the previous set — that is what makes a publish take effect without a restart.
+const beforeSecondSave = skills.invalidations;
+await save.execute({
+  name: "cat-card", description: "rebase 冲突解决流程", triggers: ["rebase"],
+  body: "## 做法\n\n先列冲突文件。", publish: true,
+}, exec);
+check("saving invalidates the skill catalog", skills.invalidations > beforeSecondSave,
+  `${skills.invalidations} vs ${beforeSecondSave}`);
 
 console.log("\nturn-end capture through the real dispatcher:");
 // Drive the registered listener the way the harness does at a turn's stop boundary.

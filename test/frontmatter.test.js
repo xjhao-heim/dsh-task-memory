@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import "./setup.js";
 import test from "node:test";
 import { listField, parseCard, serializeCard } from "../lib/frontmatter.js";
 

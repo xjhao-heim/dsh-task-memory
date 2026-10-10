@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import "./setup.js";
 import test from "node:test";
 import { classify, normalize, trigrams, THRESHOLDS } from "../lib/match.js";
 

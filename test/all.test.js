@@ -8,9 +8,13 @@
  * @module dsh-task-memory/test
  */
 
+import "./setup.js";
 import "./frontmatter.test.js";
 import "./store.test.js";
 import "./match.test.js";
+import "./tiers.test.js";
+import "./settings.test.js";
+import "./legacy.test.js";
 import "./plugin.test.js";
 import "./panel.test.js";
 import "./dropdown.test.js";

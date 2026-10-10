@@ -13,6 +13,7 @@
  */
 
 import assert from "node:assert/strict";
+import "./setup.js";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -276,9 +277,15 @@ test("the bundle exposes the dropdown and registers both slots", async () => {
     },
   };
   exports.apply(context);
-  assert.deepEqual(registered.map((entry) => entry.options.name), ["sidebar.panellist", "main"]);
+  assert.deepEqual(registered.map((entry) => entry.options.name),
+    ["sidebar.panellist", "main", "settings.section"]);
   // The sidebar entry and the page must share one key, or the layout cannot pair them.
   assert.equal(registered[0].options.id, registered[1].options.key);
+  // The settings section carries its own id and a label the settings list can render.
+  assert.equal(registered[2].options.id, "task-memory");
+  assert.equal(typeof registered[2].options.label, "function");
+  assert.match(registered[2].options.label(), /记忆/);
+  assert.equal(typeof exports.SettingsSection, "function");
 });
 
 test("renders a real button trigger and starts closed", async () => {

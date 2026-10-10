@@ -8,11 +8,30 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+// Isolates the database before anything opens it.
+import "./setup.js";
 import { apply, resolveConfig } from "../lib/index.js";
+import { openDatabase } from "../lib/db.js";
+import { importCard, listCards, resolveStore } from "../lib/store.js";
+
+/**
+ * Seed a card with controlled dates into the same database the plugin uses.
+ *
+ * The plugin opens the shared connection lazily, so a test that seeded a separate database would be
+ * writing somewhere the plugin never looks. Every seeded card therefore goes through
+ * `resolveStore(cwd)` with no override, which is the store the tools themselves resolve.
+ *
+ * @param cwd - workspace path.
+ * @param card - card fields, dates included.
+ */
+async function seedCard(cwd, card) {
+  await importCard(resolveStore(cwd), card);
+}
+import { formatDate } from "../lib/tiers.js";
 
 /**
  * Build a fake host context recording every contribution.
@@ -23,19 +42,33 @@ function host(options = {}) {
   const tools = new Map();
   const sections = [];
   let provider;
+  // Count invalidations: `control.invalidate()` is how the plugin tells the registry its catalog
+  // changed, and a missed call means the Skill Center keeps serving the previous set.
+  const invalidations = { count: 0 };
   // The real host exposes an injected service both as a direct property (`ctx.skills`) and through
   // `ctx.get(name)`; the fake has to do the same or it would not exercise the real call shape.
   const toolRegistry = { register: (definition) => { tools.set(definition.name, definition); return () => tools.delete(definition.name); } };
   const skillRegistry = {
     registerProvider: (create) => {
-      provider = create({ signal: new AbortController().signal, invalidate() {} });
-      return () => { provider = undefined; };
+      const controller = new AbortController();
+      provider = create({
+        signal: controller.signal,
+        invalidate() { invalidations.count += 1; },
+      });
+      return () => {
+        controller.abort();
+        provider = undefined;
+      };
     },
   };
   const promptRegistry = {
     section: (section) => { sections.push(section); return () => {}; },
     getSectionOrder: () => 2300,
   };
+  // Agent-scoped prompt sections: the injected index is registered per agent, so the fake records
+  // those separately from the global workflow section.
+  const agentSections = [];
+  const agentHandlers = [];
   const ctx = {
     logger: { warn() {}, info() {}, error() {} },
     tools: toolRegistry,
@@ -46,9 +79,41 @@ function host(options = {}) {
       if (service === "systemPrompt") return options.systemPrompt === false ? undefined : promptRegistry;
       return undefined;
     },
+    on(event, handler) {
+      if (event === "agent/created") agentHandlers.push(handler);
+    },
     effect: (factory) => { factory(); return () => {}; },
   };
-  return { ctx, tools, sections, provider: () => provider };
+  return {
+    ctx, tools, sections, agentSections, agentHandlers, invalidations,
+    provider: () => provider,
+  };
+}
+
+/**
+ * Fire the plugin's `agent/created` listener for one workspace, the way the host does, and return
+ * the prompt sections it registered for that agent.
+ *
+ * @param harness - the object returned by {@link host}.
+ * @param cwd - the session working directory.
+ * @returns the agent-scoped sections.
+ */
+async function emitAgentCreated(harness, cwd) {
+  for (const listener of harness.agentHandlers) {
+    await listener({
+      agent: {
+        session: { header: { cwd } },
+        ctx: {
+          get: () => ({
+            section: (section) => { harness.agentSections.push(section); return () => {}; },
+            getSectionOrder: () => 2300,
+          }),
+          effect: () => () => {},
+        },
+      },
+    });
+  }
+  return harness.agentSections;
 }
 
 /**
@@ -89,6 +154,7 @@ test("register the four memory tools and one prompt section", async () => {
   apply(ctx, {});
 
   assert.deepEqual([...tools.keys()].sort(), [
+    "task_memory_asset",
     "task_memory_index",
     "task_memory_load",
     "task_memory_save",
@@ -126,7 +192,9 @@ test("the catalog exposes one line per card and no body", async () => {
 
   const loaded = await provider().get(candidates[0], { cwd });
   assert.equal(loaded.content, CARD.body);
-  assert.equal(loaded.resourceBase.kind, "directory");
+  // A card has no file any more, so the provider reports an opaque resource base rather than a
+  // directory a relative reference could resolve against.
+  assert.equal(loaded.resourceBase.kind, "opaque");
 });
 
 test("an unpublished card stays out of the skill catalog but remains usable", async () => {
@@ -181,6 +249,114 @@ test("the save result tells the model whether the card was published", async () 
   assert.match(published, /已上架/);
 });
 
+test("saving a card invalidates the skill catalog so a publish takes effect at once", async () => {
+  const { ctx, tools, invalidations } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+
+  // `control.invalidate()` bumps the registry revision, which is part of the registry's cache key —
+  // so the next `snapshot()` re-reads this provider instead of serving the previous set. Without it
+  // a card could be published and the Skill Center would keep showing the old catalog.
+  const before = invalidations.count;
+  await call(tools, "task_memory_save", CARD, cwd);
+  assert.ok(invalidations.count > before, "creating a card must invalidate the catalog");
+
+  const afterCreate = invalidations.count;
+  await call(tools, "task_memory_save", { ...CARD, mode: "update", publish: true }, cwd);
+  assert.ok(invalidations.count > afterCreate, "publishing must invalidate the catalog");
+
+  const afterPublish = invalidations.count;
+  await call(tools, "task_memory_save", { ...CARD, mode: "update", publish: false }, cwd);
+  assert.ok(invalidations.count > afterPublish, "withdrawing must invalidate the catalog");
+});
+
+test("a refused duplicate does not invalidate the catalog", async () => {
+  const { ctx, tools, invalidations } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+  await call(tools, "task_memory_save", CARD, cwd);
+
+  const before = invalidations.count;
+  await call(tools, "task_memory_save", {
+    name: "table-scroll-shimmer",
+    description: "表格滚动时闪烁",
+    body: "## 做法\n\n同样的做法。",
+    triggers: ["表格闪烁"],
+  }, cwd);
+  assert.equal(invalidations.count, before, "nothing was written, so nothing changed");
+});
+
+test("older cards are shown in less detail in the injected index", async () => {
+  const harness = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+
+  // Three cards with deliberately unrelated content and controlled ages. The dates are seeded
+  // directly rather than through `task_memory_save`, which always stamps today — right for real use,
+  // useless for exercising the ladder.
+  const ages = [
+    ["fresh-card", "rebase 冲突解决流程", "rebase", 1],
+    ["old-card", "导出 PNG 透明背景处理", "png 透明", 60],
+    ["ancient-card", "SSH 跳板机端口转发", "跳板机", 200],
+  ];
+  for (const [name, description, trigger, daysAgo] of ages) {
+    const date = formatDate(Date.now() - daysAgo * 86_400_000);
+    await seedCard(cwd, { name, description, triggers: [trigger], status: "verified", revision: 1, created: date, updated: date, body: "## 做法\n\n内容。" });
+  }
+
+  apply(harness.ctx, { tierDays: { past: 7, old: 30, ancient: 90, forgotten: 365 } });
+  const agentSections = await emitAgentCreated(harness, cwd);
+  const index = agentSections.at(-1)?.text?.() ?? "";
+
+  assert.match(index, /\*\*近期\*\*/, "the index must group by tier");
+  assert.match(index, /\*\*很久之前\*\*/);
+  assert.match(index, /\*\*远古\*\*/);
+  assert.match(index, /触发：rebase/, "a recent card keeps its full routing line");
+  assert.doesNotMatch(index, /导出 PNG 透明背景处理；触发/, "an old card loses its trigger list");
+  assert.match(index, /`ancient-card`/, "an ancient card is still listed by name");
+});
+
+test("a forgotten card drops out of the injected index and the skill catalog", async () => {
+  const { ctx, tools, provider } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+
+  // A published card, then aged past the forgotten boundary. Re-importing it with an old date is how
+  // a card that has not been touched for a year is reproduced.
+  await call(tools, "task_memory_save", { ...CARD, publish: true }, cwd);
+  const old = formatDate(Date.now() - 400 * 86_400_000);
+  await seedCard(cwd, { ...CARD, published: true, created: old, updated: old });
+
+  // Still a real card: reachable through the tools, which is the promise the design makes.
+  const index = await call(tools, "task_memory_index", {}, cwd);
+  assert.match(index, /遗忘 1/, "the index still counts it");
+  assert.match(index, /qt-tableview-flicker/);
+
+  // But it no longer occupies the skill catalog.
+  assert.deepEqual(await provider().list({ cwd }), [], "a forgotten card must not be advertised");
+});
+
+test("the dedup suggestion prefers the fresher of two equally good matches", async () => {
+  const { ctx, tools } = host();
+  const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
+  apply(ctx, {});
+
+  // Two cards with the same routing text, so the score ties and recency decides.
+  for (const [name, daysAgo] of [["old-rebase", 300], ["new-rebase", 1]]) {
+    const date = formatDate(Date.now() - daysAgo * 86_400_000);
+    await seedCard(cwd, { name, description: "rebase 冲突解决流程", triggers: ["rebase"], status: "verified", revision: 1, created: date, updated: date, body: "## 做法\n\n内容。" });
+  }
+
+  const text = await call(tools, "task_memory_save", {
+    name: "another-rebase-card",
+    description: "rebase 冲突解决流程",
+    triggers: ["rebase"],
+    body: "## 做法\n\n新结论。",
+  }, cwd);
+
+  assert.match(text, /没有创建新卡/);
+  assert.match(text, /new-rebase/, "the fresher card is the one worth updating");
+});
+
 test("the catalog is capped and keeps the most-used cards", async () => {
   const { ctx, tools, provider } = host();
   const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
@@ -223,7 +399,7 @@ test("save refuses a near-duplicate and names the existing card", async () => {
 
   assert.match(text, /没有创建新卡/);
   assert.match(text, /qt-tableview-flicker/);
-  assert.equal((await readdir(join(cwd, ".dsh", "task-memory", "notes"))).length, 1);
+  assert.equal((await listCards(resolveStore(cwd))).length, 1, "a refused duplicate must not create a row");
 });
 
 test("save creates a genuinely different task and reports related cards", async () => {
@@ -240,7 +416,7 @@ test("save creates a genuinely different task and reports related cards", async 
   }, cwd);
 
   assert.match(text, /已创建记忆卡/);
-  assert.equal((await readdir(join(cwd, ".dsh", "task-memory", "notes"))).length, 2);
+  assert.equal((await listCards(resolveStore(cwd))).length, 2);
 });
 
 test("force-create overrides the duplicate guard", async () => {
@@ -257,10 +433,10 @@ test("force-create overrides the duplicate guard", async () => {
   }, cwd);
 
   assert.match(text, /已创建记忆卡/);
-  assert.equal((await readdir(join(cwd, ".dsh", "task-memory", "notes"))).length, 2);
+  assert.equal((await listCards(resolveStore(cwd))).length, 2);
 });
 
-test("update folds into the named card and keeps the file count", async () => {
+test("update folds into the named card and does not add a row", async () => {
   const { ctx, tools } = host();
   const cwd = await mkdtemp(join(tmpdir(), "task-memory-"));
   apply(ctx, {});
@@ -274,12 +450,11 @@ test("update folds into the named card and keeps the file count", async () => {
 
   assert.match(text, /已更新记忆卡/);
   assert.match(text, /r2/);
-  assert.equal((await readdir(join(cwd, ".dsh", "task-memory", "notes"))).length, 1);
 
-  const file = join(cwd, ".dsh", "task-memory", "notes", CARD.name, "SKILL.md");
-  const stored = await readFile(file, "utf8");
-  assert.match(stored, /## 适用场景/, "the merge must keep sections the update did not mention");
-  assert.match(stored, /滚动模式/);
+  const cards = await listCards(resolveStore(cwd));
+  assert.equal(cards.length, 1, "an update must not create a second card");
+  assert.match(cards[0].body, /## 适用场景/, "the merge must keep sections the update did not mention");
+  assert.match(cards[0].body, /滚动模式/);
 });
 
 test("load returns the body, metadata, and asset list", async () => {

@@ -10,11 +10,17 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+// Isolates the database before anything opens it.
+import "./setup.js";
 import { registerPanelRoutes } from "../lib/panel.js";
+import { createSettingsHandle } from "../lib/settings.js";
+import { importCard, listCards, resolveStore } from "../lib/store.js";
+import { formatDate } from "../lib/tiers.js";
 
 /**
  * Build a fake host context exposing a capturing web server.
@@ -39,7 +45,11 @@ function host(options = {}) {
       return undefined;
     },
   };
-  return { ctx, routes, logs };
+  // Record after-write notifications. The panel is the only writer that does not go through a tool;
+  // it receives the same callback the tools use, so a publish made in the UI also reaches the skill
+  // catalog. Without it the Skill Center would keep serving the previous set.
+  const writes = { seen: [], record: (workspace) => { writes.seen.push(workspace); } };
+  return { ctx, routes, logs, writes };
 }
 
 /**
@@ -112,8 +122,14 @@ test("registers the panel routes and reports them once", () => {
     "/api/task-memory/card",
     "/api/task-memory/cards",
     "/api/task-memory/delete",
+    "/api/task-memory/forgotten",
+    "/api/task-memory/legacy/import",
+    "/api/task-memory/legacy/preview",
+    "/api/task-memory/legacy/remove",
+    "/api/task-memory/purge",
     "/api/task-memory/save",
     "/api/task-memory/search",
+    "/api/task-memory/settings",
     "/api/task-memory/workspaces",
   ]);
   assert.equal(logs.filter((line) => line.includes("memory panel API mounted")).length, 1);
@@ -130,9 +146,172 @@ test("a profile without a web server mounts nothing and says so", () => {
   assert.equal(logs.some((line) => line.includes("no webServer")), true);
 });
 
+test("the panel notifies after a write so a UI publish reaches the skill catalog", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
+  const cwd = await workspace();
+
+  await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+    workspace: cwd, mode: "create", name: "pub-me", description: "d", body: "## x\n\ny", published: true,
+  });
+  // The notification is fire-and-forget, so let the microtask queue drain before asserting.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(writes.seen, [cwd], "saving must notify once for this workspace");
+
+  await call(routes, "/api/task-memory/delete", "/api/task-memory/delete", { workspace: cwd, name: "pub-me" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(writes.seen, [cwd, cwd], "deleting must notify too");
+});
+
+test("a rejected panel write does not notify", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
+  const cwd = await workspace();
+
+  const bad = await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+    workspace: cwd, mode: "create", name: "bad", description: "", body: "## x\n\ny",
+  });
+  assert.equal(bad.status, 400);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(writes.seen, [], "a refused write changed nothing, so nothing needs refreshing");
+});
+
+test("card rows carry the recency tier and a readable age", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
+  const cwd = await workspace();
+
+  await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+    workspace: cwd, mode: "create", name: "fresh", description: "刚写的卡", body: "## x\n\ny",
+  });
+
+  const list = await call(routes, "/api/task-memory/cards", `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`);
+  const row = list.payload.cards[0];
+  assert.equal(row.tier, "recent");
+  assert.equal(row.tierLabel, "近期");
+  assert.equal(row.ageLabel, "今天");
+  assert.equal(typeof row.days, "number");
+});
+
+test("the forgotten route lists aged cards and purge removes only those named", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
+  const cwd = await workspace();
+
+  for (const [name, description] of [["keeper", "要保留的卡"], ["doomed", "要清理的卡"]]) {
+    await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+      workspace: cwd, mode: "create", name, description, body: "## x\n\ny",
+    });
+  }
+  // Age one card past the forgotten boundary by re-importing it with an old date, the way a real
+  // year would.
+  const old = formatDate(Date.now() - 400 * 86_400_000);
+  await importCard(resolveStore(cwd), { name: "doomed", description: "要清理的卡", created: old, updated: old, body: "## x\n\ny" });
+
+  const forgotten = await call(routes, "/api/task-memory/forgotten", `/api/task-memory/forgotten?workspace=${encodeURIComponent(cwd)}`);
+  assert.deepEqual(forgotten.payload.forgotten.map((row) => row.name), ["doomed"],
+    "only the aged card is listed");
+
+  // Purging is explicit and bounded: it removes what it was told to, and nothing else.
+  const purged = await call(routes, "/api/task-memory/purge", "/api/task-memory/purge", {
+    workspace: cwd, names: ["doomed"],
+  });
+  assert.deepEqual(purged.payload.removed, ["doomed"]);
+  const left = await call(routes, "/api/task-memory/cards", `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`);
+  assert.deepEqual(left.payload.cards.map((row) => row.name), ["keeper"]);
+
+  // A purge with no names is refused rather than treated as "everything".
+  const empty = await call(routes, "/api/task-memory/purge", "/api/task-memory/purge", { workspace: cwd, names: [] });
+  assert.equal(empty.status, 400);
+  assert.match(empty.payload.error, /需要给出/);
+});
+
+test("the cards route filters by tier and returns the pickers' data", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record, { past: 7, old: 30, ancient: 90, forgotten: 365 }, ["recent"]);
+  const cwd = await workspace();
+
+  // Two cards with unrelated content, one aged past the forgotten boundary.
+  for (const [name, description] of [["fresh", "刚写的卡"], ["stale-one", "很久以前写的卡"]]) {
+    await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+      workspace: cwd, mode: "create", name, description, body: "## x\n\ny",
+    });
+  }
+  const old = formatDate(Date.now() - 400 * 86_400_000);
+  await importCard(resolveStore(cwd), { name: "stale-one", description: "很久以前写的卡", created: old, updated: old, body: "## x\n\ny" });
+
+  const base = `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`;
+  const all = await call(routes, "/api/task-memory/cards", base);
+  assert.equal(all.payload.total, 2);
+  assert.deepEqual(all.payload.cards.map((row) => row.name).sort(), ["fresh", "stale-one"], "no filter shows all");
+  assert.deepEqual(all.payload.defaultTiers, ["recent"], "the configured default travels to the panel");
+  assert.deepEqual(all.payload.dateBounds.max, formatDate(Date.now()), "the bounds describe the data");
+  assert.equal(all.payload.days.length, 2, "one entry per day that holds a card");
+  assert.equal(all.payload.days.reduce((sum, day) => sum + day.count, 0), 2);
+
+  const recentOnly = await call(routes, "/api/task-memory/cards", `${base}&tiers=recent`);
+  assert.deepEqual(recentOnly.payload.cards.map((row) => row.name), ["fresh"]);
+
+  const forgottenOnly = await call(routes, "/api/task-memory/cards", `${base}&tiers=forgotten`);
+  assert.deepEqual(forgottenOnly.payload.cards.map((row) => row.name), ["stale-one"],
+    "the forgotten tier is reachable, not hidden, once asked for");
+
+  // An unrecognised tier list means "no filter" rather than "match nothing": an empty list would
+  // render as a broken panel.
+  const bogus = await call(routes, "/api/task-memory/cards", `${base}&tiers=nonsense`);
+  assert.equal(bogus.payload.cards.length, 2);
+});
+
+test("the cards route filters by date range", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
+  const cwd = await workspace();
+  await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+    workspace: cwd, mode: "create", name: "today", description: "今天的卡", body: "## x\n\ny",
+  });
+
+  const base = `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`;
+  const today = formatDate(Date.now());
+  const yesterday = formatDate(Date.now() - 86_400_000);
+
+  assert.equal((await call(routes, "/api/task-memory/cards", `${base}&from=${today}&to=${today}`)).payload.cards.length, 1);
+  assert.equal((await call(routes, "/api/task-memory/cards", `${base}&from=${yesterday}&to=${yesterday}`)).payload.cards.length, 0);
+  assert.equal((await call(routes, "/api/task-memory/cards", `${base}&to=${yesterday}`)).payload.cards.length, 0, "an upper bound excludes it");
+  assert.equal((await call(routes, "/api/task-memory/cards", `${base}&from=${today}`)).payload.cards.length, 1, "a lower bound includes it");
+});
+
+test("the settings route reads, fills in defaults, and writes through the shared handle", async () => {
+  const { ctx, routes, writes } = host();
+  const env = await mkdtemp(join(tmpdir(), "task-memory-settings-route-"));
+  const handle = createSettingsHandle({ autoCapture: true }, { DSH_HOME: env });
+  registerPanelRoutes(ctx, ctx.logger, writes.record, undefined, undefined, handle);
+
+  // Reading is also what makes the local file complete: every parameter the file did not carry is
+  // written with the value the plugin actually runs with, and the page gets that effective view.
+  const initial = await call(routes, "/api/task-memory/settings", "/api/task-memory/settings");
+  assert.match(initial.payload.configPath, /settings\.json$/);
+  assert.equal(initial.payload.settings.autoCapture, true, "the default was written to the file");
+  assert.equal(initial.payload.effective.maxCatalogCards, 50);
+  assert.deepEqual(initial.payload.effective.defaultTiers, ["recent"]);
+  assert.ok(initial.payload.initialized.includes("maxBodyChars"), "and it reports what it filled in");
+
+  const saved = await call(routes, "/api/task-memory/settings", "/api/task-memory/settings", {
+    autoCapture: false, defaultTiers: ["recent", "past"],
+  });
+  assert.equal(saved.payload.settings.autoCapture, false);
+  assert.deepEqual(saved.payload.settings.defaultTiers, ["recent", "past"]);
+  assert.equal(handle.effective().autoCapture, false, "the live handle sees the change at once");
+
+  const rejected = await call(routes, "/api/task-memory/settings", "/api/task-memory/settings", {
+    tierDays: { past: 30, old: 7 },
+  });
+  assert.equal(rejected.status, 400, "an unusable ladder is refused, not stored");
+  assert.equal(handle.snapshot().tierDays.past, 7, "and the stored ladder is untouched");
+});
+
 test("saving from the panel stores the body verbatim instead of merging it", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
@@ -155,16 +334,16 @@ test("saving from the panel stores the body verbatim instead of merging it", asy
   });
 
   assert.equal(saved.status, 200);
-  const stored = await readFile(join(cwd, ".dsh", "task-memory", "notes", "panel-card", "SKILL.md"), "utf8");
-  assert.match(stored, /改写后的第一步/);
-  assert.doesNotMatch(stored, /## 验证/, "a section the editor removed must not come back");
-  assert.doesNotMatch(stored, /甲/, "a trigger the editor removed must not come back");
-  assert.match(stored, /丙/);
+  const stored = await listCards(resolveStore(cwd));
+  assert.match(stored[0].body, /改写后的第一步/);
+  assert.doesNotMatch(stored[0].body, /## 验证/, "a section the editor removed must not come back");
+  assert.doesNotMatch(stored[0].triggers.join(" "), /甲/, "a trigger the editor removed must not come back");
+  assert.match(stored[0].triggers.join(" "), /丙/);
 });
 
 test("list returns rows with routing metadata and load counts", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
@@ -189,12 +368,11 @@ test("list returns rows with routing metadata and load counts", async () => {
   assert.equal(row.status, "verified");
   assert.equal(row.revision, 1);
   assert.equal(row.hits, 0);
-  assert.equal(row.problem, null);
 });
 
-test("reading one card returns its body, raw text, and asset list", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+test("reading one card returns its body and asset list", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
@@ -209,15 +387,15 @@ test("reading one card returns its body, raw text, and asset list", async () => 
 
   assert.equal(detail.status, 200);
   assert.match(detail.payload.body, /正文内容/);
-  assert.match(detail.payload.raw, /^---\n/, "the editor needs the raw file, frontmatter included");
-  assert.match(detail.payload.raw, /name: read-card/);
   assert.deepEqual(detail.payload.assets, []);
-  assert.match(detail.payload.path, /read-card/);
+  // There is no file any more, so the detail carries the card's own fields instead of a raw path.
+  assert.equal(detail.payload.card.name, "read-card");
+  assert.equal(detail.payload.card.tierLabel, "近期");
 });
 
 test("create refuses an existing name and update refuses a missing one", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   const missing = await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
@@ -238,8 +416,8 @@ test("create refuses an existing name and update refuses a missing one", async (
 });
 
 test("an empty workspace path fails instead of guessing one", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
 
   const missing = await call(routes, "/api/task-memory/cards", "/api/task-memory/cards");
   assert.equal(missing.status, 400);
@@ -251,8 +429,8 @@ test("an empty workspace path fails instead of guessing one", async () => {
 });
 
 test("empty required fields are refused with a readable reason", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   for (const [body, expected] of [
@@ -266,9 +444,9 @@ test("empty required fields are refused with a readable reason", async () => {
   }
 });
 
-test("deleting removes the card directory and reports a missing one", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+test("deleting removes the card and reports a missing one", async () => {
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
@@ -277,7 +455,7 @@ test("deleting removes the card directory and reports a missing one", async () =
   const removed = await call(routes, "/api/task-memory/delete", "/api/task-memory/delete", { workspace: cwd, name: "doomed" });
   assert.equal(removed.status, 200);
   assert.equal(removed.payload.removed, "doomed");
-  assert.deepEqual((await readdir(join(cwd, ".dsh", "task-memory", "notes"))), []);
+  assert.deepEqual(await listCards(resolveStore(cwd)), []);
 
   const again = await call(routes, "/api/task-memory/delete", "/api/task-memory/delete", { workspace: cwd, name: "doomed" });
   assert.equal(again.status, 400);
@@ -285,8 +463,8 @@ test("deleting removes the card directory and reports a missing one", async () =
 });
 
 test("search matches body text and returns an empty list for an empty query", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
 
   await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
@@ -303,10 +481,10 @@ test("search matches body text and returns an empty list for an empty query", as
 
 test("the workspace list reports a card count per workspace", async () => {
   const cwd = await workspace();
-  const { ctx, routes } = host({
+  const { ctx, routes, writes } = host({
     registry: { list: () => [{ id: "w1", path: cwd, title: "测试工作区" }] },
   });
-  registerPanelRoutes(ctx, ctx.logger);
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
 
   await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
     workspace: cwd, mode: "create", name: "counted", description: "d", body: "## x\n\ny",
@@ -319,8 +497,8 @@ test("the workspace list reports a card count per workspace", async () => {
 });
 
 test("a malformed JSON body is refused rather than treated as empty", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const handler = routes.get("/api/task-memory/save");
   const res = response();
   await handler({
@@ -335,8 +513,8 @@ test("a malformed JSON body is refused rather than treated as empty", async () =
 });
 
 test("an oversized body is refused", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const handler = routes.get("/api/task-memory/save");
   const res = response();
   const big = Buffer.alloc(600 * 1024, 0x61);
@@ -351,17 +529,66 @@ test("an oversized body is refused", async () => {
   assert.match(res.json().error, /exceeds/);
 });
 
-test("a malformed card still lists with its problem attached", async () => {
-  const { ctx, routes } = host();
-  registerPanelRoutes(ctx, ctx.logger);
+test("a legacy card with broken frontmatter is reported rather than silently dropped", async () => {
+  // A database row cannot be malformed, so the case that still matters is the import: a card file
+  // the reader cannot parse must be named in the preview instead of disappearing during a migration.
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
   const cwd = await workspace();
   const broken = join(cwd, ".dsh", "task-memory", "notes", "broken-one");
   const { mkdir, writeFile } = await import("node:fs/promises");
   await mkdir(broken, { recursive: true });
   await writeFile(join(broken, "SKILL.md"), "no frontmatter here", "utf8");
 
-  const list = await call(routes, "/api/task-memory/cards", `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`);
-  const row = list.payload.cards.find((card) => card.name === "broken-one");
-  assert.ok(row, "an unreadable card must still be visible in the panel");
-  assert.match(row.problem, /frontmatter/);
+  const preview = await call(routes, "/api/task-memory/legacy/preview",
+    `/api/task-memory/legacy/preview?workspace=${encodeURIComponent(cwd)}`);
+  assert.equal(preview.payload.found, true);
+  assert.equal(preview.payload.totals.unreadable, 1, "the unreadable card must be counted");
+  assert.match(preview.payload.unreadable[0].reason, /frontmatter/);
+  assert.equal(preview.payload.totals.cards, 0, "and nothing is imported from it");
+});
+
+test("every field the client reads off a list row is actually sent", async () => {
+  // A field that stops being sent does not break anything loudly: the client reads `undefined`, and
+  // a comparison written as `field !== null` is then permanently true. That is how every card in the
+  // panel came to wear a "读取失败" badge after the store moved into the database. Nothing tested the
+  // two sides against each other, so this pins the contract: what the list route emits must cover
+  // what the client reads.
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record);
+  const cwd = await workspace();
+  await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+    workspace: cwd,
+    mode: "create",
+    name: "field-contract",
+    description: "字段契约",
+    whenToUse: "任何时候",
+    triggers: ["触发"],
+    tags: ["标签"],
+    body: "## 做法\n\n内容。",
+  });
+
+  const listed = await call(routes, "/api/task-memory/cards", `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`);
+  const sent = new Set(Object.keys(listed.payload.cards[0]));
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const client = await readFile(join(here, "..", "client.js"), "utf8");
+  // Only `card.<field>` reads describe this list row; other objects in the file reuse the name.
+  const read = new Set([...client.matchAll(/\bcard\.([A-Za-z_$][\w$]*)/g)].map((match) => match[1]));
+  assert.ok(read.size > 5, `the client must read several fields, found: ${[...read].join(", ")}`);
+
+  const missing = [...read].filter((field) => !sent.has(field));
+  assert.deepEqual(missing, [], `客户端读了但宿主没发的字段：${missing.join(", ")}`);
+});
+
+test("the client does not test presence with a null-only comparison", async () => {
+  // `undefined !== null` is true, so `!== null` cannot express "this field is absent". Any presence
+  // check on a value that may be missing has to use `!= null` or Object.hasOwn.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const client = await readFile(join(here, "..", "client.js"), "utf8");
+  const violations = client.split("\n")
+    .map((line, index) => ({ line: line.trim(), number: index + 1 }))
+    .filter(({ line }) => /\.[A-Za-z_$][\w$]*\s*!==\s*null\b/.test(line) && !/\.current\s*!==\s*null/.test(line));
+  assert.deepEqual(violations, [], `存在性判断不要写 !== null（undefined 会漏过）：\n`
+    + violations.map(({ line, number }) => `  ${number}: ${line}`).join("\n"));
 });
