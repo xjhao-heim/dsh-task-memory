@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-memory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DeepSeek Harness plugin: workspace-scoped task memory. Reusable procedures are stored one card per task, the card catalog is the index, and card bodies load on demand.",
   "type": "module",
   "main": "lib/index.js",
