@@ -245,7 +245,7 @@ test("the cards route filters by tier and returns the pickers' data", async () =
   assert.equal(all.payload.total, 2);
   assert.deepEqual(all.payload.cards.map((row) => row.name).sort(), ["fresh", "stale-one"], "no filter shows all");
   assert.deepEqual(all.payload.defaultTiers, ["recent"], "the configured default travels to the panel");
-  assert.deepEqual(all.payload.dateBounds.max, formatDate(Date.now()), "the bounds describe the data");
+  assert.deepEqual(all.payload.dateBounds.to, formatDate(Date.now()), "the bounds describe the data");
   assert.equal(all.payload.days.length, 2, "one entry per day that holds a card");
   assert.equal(all.payload.days.reduce((sum, day) => sum + day.count, 0), 2);
 
@@ -260,6 +260,69 @@ test("the cards route filters by tier and returns the pickers' data", async () =
   // render as a broken panel.
   const bogus = await call(routes, "/api/task-memory/cards", `${base}&tiers=nonsense`);
   assert.equal(bogus.payload.cards.length, 2);
+});
+
+test("the cards route reports the date window each filter mode covers", async () => {
+  // The panel moves its date pickers when the mode changes, so switching to 仅之前 shows that tier
+  // instead of an empty list. It cannot compute the window itself — the ladder is configuration —
+  // so the host must send one per mode, and each must actually select the tier it names.
+  const { ctx, routes, writes } = host();
+  registerPanelRoutes(ctx, ctx.logger, writes.record, { past: 7, old: 30, ancient: 90, forgotten: 365 }, ["recent"]);
+  const cwd = await workspace();
+  await call(routes, "/api/task-memory/save", "/api/task-memory/save", {
+    workspace: cwd, mode: "create", name: "fresh", description: "刚写的卡", body: "## x\n\ny",
+  });
+  const longAgo = formatDate(Date.now() - 400 * 86_400_000);
+  await importCard(resolveStore(cwd), {
+    name: "stale-one", description: "很久以前写的卡", created: longAgo, updated: longAgo, body: "## x\n\ny",
+  });
+
+  const base = `/api/task-memory/cards?workspace=${encodeURIComponent(cwd)}`;
+  const payload = (await call(routes, "/api/task-memory/cards", base)).payload;
+  const ranges = payload.modeRanges;
+  assert.ok(ranges !== undefined, "the panel needs a window per mode or it cannot move the pickers");
+
+  for (const mode of ["recent", "past", "old", "ancient", "forgotten", "default"]) {
+    assert.ok(ranges[mode] !== undefined, `缺少 ${mode} 的日期窗口`);
+  }
+  assert.deepEqual(ranges.default, ranges.recent, "the default mode mirrors the configured tiers");
+  assert.deepEqual(ranges.all, { from: "", to: "" }, "全时段 puts no date restriction at all");
+
+  // Every day of the ladder: the window must select exactly the cards the tier names. This is the
+  // assertion that would have caught a window off by one at a boundary.
+  const today = formatDate(Date.now());
+  assert.equal(ranges.recent.to, today);
+  assert.equal(ranges.forgotten.from, "", "the oldest tier has no lower bound");
+  assert.ok(ranges.past.from < ranges.past.to, "a real span, not a single day");
+
+  // Driving the range the panel would send back has to agree with the tier filter.
+  const recent = await call(routes, "/api/task-memory/cards",
+    `${base}&tiers=recent&from=${ranges.recent.from}&to=${ranges.recent.to}`);
+  assert.deepEqual(recent.payload.cards.map((row) => row.name), ["fresh"],
+    "the recent window must not hide the fresh card");
+  const forgotten = await call(routes, "/api/task-memory/cards",
+    `${base}&tiers=forgotten&from=${ranges.forgotten.from}&to=${ranges.forgotten.to}`);
+  assert.deepEqual(forgotten.payload.cards.map((row) => row.name), ["stale-one"],
+    "the forgotten window must reach the old card");
+
+  // The bug this feature fixes: tier alone with the full date span used to show nothing usable, and
+  // a narrow stale range used to overrule the tier. Both now describe the same slice.
+  const staleRange = `${base}&tiers=recent&from=${ranges.forgotten.from}&to=${ranges.forgotten.to}`;
+  assert.equal((await call(routes, "/api/task-memory/cards", staleRange)).payload.cards.length, 0,
+    "a range that contradicts the tier shows nothing — which is why switching must move both");
+
+  // A card with no usable date is excluded by every range, so "全部档位" must not impose the observed
+  // span: that view is the one place nothing is allowed to disappear.
+  await importCard(resolveStore(cwd), {
+    name: "undated", description: "没有日期的卡", created: "", updated: "", body: "## x\n\ny",
+  });
+  const withUndated = await call(routes, "/api/task-memory/cards", base);
+  assert.ok(withUndated.payload.cards.some((row) => row.name === "undated"),
+    "no filter must still list a card whose date is unknown");
+  const allMode = `${base}&tiers=recent,past,old,ancient,forgotten`
+    + `&from=${withUndated.payload.modeRanges.all.from}&to=${withUndated.payload.modeRanges.all.to}`;
+  assert.ok((await call(routes, "/api/task-memory/cards", allMode)).payload.cards
+    .some((row) => row.name === "undated"), "全时段 must not hide it either");
 });
 
 test("the cards route filters by date range", async () => {

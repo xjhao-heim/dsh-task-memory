@@ -31,6 +31,7 @@ import {
   TIER_LABELS,
   TIER_ORDER,
   tierOf,
+  tierWindow,
 } from "../lib/tiers.js";
 
 /** A fixed instant so the tests never depend on the wall clock. */
@@ -94,6 +95,74 @@ test("the configured boundaries move the tiers", () => {
   assert.equal(tierOf(card(ago(2)), { days: tight, now: NOW }).tier, "past");
   assert.equal(tierOf(card(ago(4)), { days: tight, now: NOW }).tier, "ancient");
   assert.equal(tierOf(card(ago(5)), { days: tight, now: NOW }).tier, "forgotten");
+});
+
+test("a tier's window contains exactly the cards that tier classifies", () => {
+  // The window is what the panel puts in its date pickers, and the tier is what the host filters by.
+  // If the two ever disagree, picking a tier shows a range that contradicts the list — so this walks
+  // every day across the whole ladder and requires the window to admit precisely the same cards.
+  const days = { past: 7, old: 30, ancient: 90, forgotten: 365 };
+  for (const tier of TIER_ORDER) {
+    const window = tierWindow([tier], { days, now: NOW });
+    for (let elapsed = 0; elapsed <= 400; elapsed += 1) {
+      const date = ago(elapsed);
+      const classified = tierOf(card(date), { days, now: NOW }).tier === tier;
+      const inWindow = (window.from === "" || date >= window.from)
+        && (window.to === "" || date <= window.to);
+      assert.equal(inWindow, classified,
+        `${elapsed} 天前（${date}）: 档位说 ${classified}，窗口 ${window.from}~${window.to} 说 ${inWindow}`);
+    }
+  }
+});
+
+test("tierWindow bounds are exactly the tier boundaries", () => {
+  const days = DEFAULT_TIER_DAYS;
+  const now = NOW;
+  assert.deepEqual(tierWindow(["recent"], { days, now }),
+    { from: ago(days.past), to: ago(0) }, "recent ends at the past boundary, inclusive");
+  assert.deepEqual(tierWindow(["past"], { days, now }),
+    { from: ago(days.old), to: ago(days.past + 1) }, "past starts the day after recent ends");
+  assert.deepEqual(tierWindow(["old"], { days, now }),
+    { from: ago(days.ancient), to: ago(days.old + 1) });
+  assert.deepEqual(tierWindow(["ancient"], { days, now }),
+    { from: ago(days.forgotten), to: ago(days.ancient + 1) });
+});
+
+test("the forgotten window has no oldest end", () => {
+  // A card older than any ladder step must not be cut off by an invented date.
+  const window = tierWindow(["forgotten"], { days: DEFAULT_TIER_DAYS, now: NOW });
+  assert.equal(window.from, "", "an open end, not an arbitrary early date");
+  assert.equal(window.to, ago(DEFAULT_TIER_DAYS.forgotten + 1));
+  assert.ok(ago(5000) <= window.to, "an arbitrarily old card still fits");
+});
+
+test("a window over several tiers spans them all", () => {
+  const days = DEFAULT_TIER_DAYS;
+  const several = tierWindow(["recent", "past"], { days, now: NOW });
+  assert.deepEqual(several, { from: ago(days.old), to: ago(0) });
+  assert.deepEqual(tierWindow(TIER_ORDER, { days, now: NOW }),
+    { from: "", to: ago(0) }, "all tiers together have no oldest end");
+  assert.deepEqual(tierWindow([], { days, now: NOW }), { from: "", to: "" },
+    "no tier means no restriction");
+});
+
+test("the window follows the configured ladder, not a hard-coded one", () => {
+  const tight = { past: 1, old: 2, ancient: 3, forgotten: 4 };
+  assert.deepEqual(tierWindow(["past"], { days: tight, now: NOW }),
+    { from: ago(2), to: ago(2) }, "a one-day tier is a single date");
+  assert.deepEqual(tierWindow(["recent"], { days: tight, now: NOW }),
+    { from: ago(1), to: ago(0) });
+});
+
+test("the window crosses a month boundary correctly", () => {
+  // Calendar arithmetic, not millisecond arithmetic: subtracting 30 days from mid-March has to land
+  // in February regardless of how long the month is.
+  const march = new Date(2026, 2, 15).getTime();
+  const window = tierWindow(["past"], { days: { past: 7, old: 30, ancient: 90, forgotten: 365 }, now: march });
+  // 8..30 days before 15 March inclusive: the 8th is 7 March, the 30th is 13 February.
+  assert.equal(window.from, "2026-02-13");
+  assert.equal(window.to, "2026-03-07");
+  assert.equal(formatDate(parseDate(window.from)), "2026-02-13", "and the result round-trips");
 });
 
 test("a binding immediately after a boundary is not a tier", () => {

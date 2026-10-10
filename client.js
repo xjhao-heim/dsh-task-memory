@@ -514,6 +514,14 @@ window.__ModuleLoader__.load({
       const [workspaces, setWorkspaces] = React.useState([]);
       const [workspace, setWorkspace] = React.useState('');
       const [cards, setCards] = React.useState([]);
+      /**
+       * How many cards the workspace holds, before any filter.
+       *
+       * The empty state needs both numbers: "no cards at all" and "nothing matched this filter" call
+       * for different advice, and with a tier filter switching the dates around, the second case is
+       * now easy to reach — showing "还没有卡片" there would tell the user their memory is empty.
+       */
+      const [total, setTotal] = React.useState(0);
       const [selected, setSelected] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
       const [query, setQuery] = React.useState('');
@@ -531,11 +539,18 @@ window.__ModuleLoader__.load({
        * without asking the reader to reason about a combination of checkboxes.
        */
       const [filterMode, setFilterMode] = React.useState('default');
-      // Date range. Empty means "not restricted"; the pickers seed from the real data's span so the
-      // control reflects what exists instead of a hard-coded default.
+      // Date range. Empty means "not restricted"; the pickers seed from the window their filter mode
+      // covers, so the control reflects what the list is actually showing.
       const [from, setFrom] = React.useState('');
       const [to, setTo] = React.useState('');
-      const [bounds, setBounds] = React.useState({ min: '', max: '' });
+      const [bounds, setBounds] = React.useState({ from: '', to: '' });
+      /**
+       * The date window each filter mode covers, supplied by the host.
+       *
+       * The tier boundaries are configuration, so the browser must not re-derive them — it would
+       * drift the moment the ladder changes. Empty until the first response arrives.
+       */
+      const [modeRanges, setModeRanges] = React.useState({});
       const [days, setDays] = React.useState([]);
 
       const fail = (error) => setNotice({ kind: 'err', text: error instanceof Error ? error.message : String(error) });
@@ -562,6 +577,26 @@ window.__ModuleLoader__.load({
         if (mode === 'all') return ['recent', 'past', 'old', 'ancient', 'forgotten'];
         if (mode === 'default') return tiers === null ? [] : [...tiers];
         return [mode];
+      };
+
+      /**
+       * Switch the tier filter, and move the date range onto the window that filter covers.
+       *
+       * Without this the two controls quietly disagree: picking 仅之前 while the range still spans
+       * every date shows nothing, because the tier filter and the range are applied together. The
+       * window comes from the host, which owns the tier boundaries.
+       *
+       * A range the user set by hand is deliberately replaced here — that is the point of choosing a
+       * tier. "全时段" is the button that widens the range back.
+       *
+       * @param mode - the filter mode to switch to.
+       */
+      const chooseMode = (mode) => {
+        setFilterMode(mode);
+        const window = modeRanges[mode];
+        if (window === undefined) return;
+        setFrom(window.from);
+        setTo(window.to);
       };
 
       React.useEffect(() => {
@@ -601,14 +636,22 @@ window.__ModuleLoader__.load({
             },
           });
           setCards(Array.isArray(payload.cards) ? payload.cards : []);
+          if (Number.isFinite(payload.total)) setTotal(payload.total);
           // The first response for a workspace supplies the filter defaults: which tiers the
           // deployment opens on, and the span of dates that actually exist.
           if (tiers === null && Array.isArray(payload.defaultTiers)) setTiers(new Set(payload.defaultTiers));
           if (Array.isArray(payload.tierDays)) setDays(payload.tierDays);
-          if (payload.dateBounds !== undefined) {
-            setBounds(payload.dateBounds);
-            setFrom((current) => (current === '' ? payload.dateBounds.min ?? '' : current));
-            setTo((current) => (current === '' ? payload.dateBounds.max ?? '' : current));
+          if (payload.dateBounds !== undefined) setBounds(payload.dateBounds);
+          if (payload.modeRanges !== undefined) {
+            setModeRanges(payload.modeRanges);
+            // The opening view applies its own window too, so the pickers never start out describing
+            // a wider period than the tier filter is showing. Only an untouched range is seeded:
+            // after that the range is the user's (or a mode switch's) to set.
+            const opening = payload.modeRanges.default;
+            if (opening !== undefined) {
+              setFrom((current) => (current === '' ? opening.from : current));
+              setTo((current) => (current === '' ? opening.to : current));
+            }
           }
           setNotice(null);
         } catch (error) {
@@ -831,7 +874,7 @@ window.__ModuleLoader__.load({
           value: filterMode,
           ariaLabel: '档位筛选',
           options: filterModes.map((mode) => ({ value: mode.value, label: mode.label })),
-          onChange: (next) => setFilterMode(next),
+          onChange: (next) => chooseMode(next),
         }),
         h('input', {
           className: 'tm-input', placeholder: '检索正文…', value: query,
@@ -844,10 +887,7 @@ window.__ModuleLoader__.load({
         h('button', {
           className: 'tm-btn',
           disabled: busy || workspace === '',
-          onClick: () => {
-            setFrom(bounds.min ?? '');
-            setTo(bounds.max ?? '');
-          },
+          onClick: () => chooseMode('all'),
         }, '全时段'));
 
       // Date range. The pickers are bounded by the real span of stored dates, and each day that
@@ -859,8 +899,8 @@ window.__ModuleLoader__.load({
           className: 'tm-input tm-date',
           type: 'date',
           value: from,
-          min: bounds.min ?? undefined,
-          max: bounds.max ?? undefined,
+          min: bounds.from ?? undefined,
+          max: bounds.to ?? undefined,
           onChange: (event) => setFrom(event.target.value),
           // Days that hold a card are tinted through the picker's own calendar cells, which the
           // theme cannot reach from here; the chips below carry the same information reliably.
@@ -871,12 +911,12 @@ window.__ModuleLoader__.load({
           className: 'tm-input tm-date',
           type: 'date',
           value: to,
-          min: bounds.min ?? undefined,
-          max: bounds.max ?? undefined,
+          min: bounds.from ?? undefined,
+          max: bounds.to ?? undefined,
           onChange: (event) => setTo(event.target.value),
         }),
         h('span', { className: 'tm-range-hint' },
-          bounds.min === '' ? '（暂无卡片）' : `数据范围 ${bounds.min} ~ ${bounds.max}`));
+          bounds.from === '' ? '（暂无卡片）' : `数据范围 ${bounds.from} ~ ${bounds.to}`));
 
       // Which days hold cards, shown as a compact strip of counts. This is the "明显标记" part: a
       // date input's calendar cannot be styled, so the information is surfaced beside it instead.
@@ -892,7 +932,14 @@ window.__ModuleLoader__.load({
       const list = loading
         ? h('div', { className: 'tm-empty' }, '读取中…')
         : cards.length === 0
-          ? h('div', { className: 'tm-empty' }, '这个工作区还没有任务记忆卡。', h('br'), '任务结束后，满足条件的做法会被自动记录。')
+          ? h('div', { className: 'tm-empty' },
+            total === 0
+              ? '这个工作区还没有任务记忆卡。'
+              : '当前筛选下没有卡片。',
+            h('br'),
+            total === 0
+              ? '任务结束后，满足条件的做法会被自动记录。'
+              : `这个工作区共有 ${total} 张卡，换个档位或放宽日期就能看到。`)
           : h('div', { className: 'tm-list' }, cards.flatMap((card, position) => {
             // Group headers are inserted where the tier changes. The list arrives already tier-sorted
             // from the host, so this only has to notice the boundary.
@@ -1014,9 +1061,12 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       // Exposed for tests: the dropdown carries real interaction logic (keyboard, outside click,
-      // focus return), and logic nobody can drive is logic nobody has checked.
+      // focus return), and logic nobody can drive is logic nobody has checked. `Panel` is exported
+      // for the same reason — its mode switch moves the date range, and that wiring is invisible to
+      // any test that only checks the host's payload.
       Dropdown,
       SettingsSection,
+      Panel,
       apply(ctx) {
         ctx.effect(() => installStyles(), 'task-memory: panel styles');
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({

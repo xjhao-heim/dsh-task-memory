@@ -76,6 +76,26 @@ function createRuntime() {
         queue.push({ hook, effect });
       }
     },
+    // The panel memoizes its reload callback, and that memoization is load-bearing: `useEffect`
+    // depends on the callback's identity, so returning a fresh function each render would re-issue
+    // the request on every render — and because this runner flushes effects synchronously, that is an
+    // unbounded recursion rather than a slow loop. React returns the same function while the deps are
+    // unchanged; so does this.
+    useCallback(fn, deps) {
+      const instance = current;
+      const hook = instance.hooks[instance.index] ?? (instance.hooks[instance.index] = {});
+      instance.index += 1;
+      const previous = hook.deps;
+      const changed = previous === undefined
+        || deps === undefined
+        || deps.length !== previous.length
+        || deps.some((value, index) => !Object.is(value, previous[index]));
+      if (changed) {
+        hook.deps = deps;
+        hook.value = fn;
+      }
+      return hook.value;
+    },
   };
 
   return {
@@ -422,6 +442,191 @@ test("an empty option list says so instead of showing an empty popup", async () 
   const { click, tree } = await setup("", []);
   click(find(tree(), byClass("tm-dd-trigger")));
   assert.match(textOf(find(tree(), byClass("tm-dd-menu"))), /没有可选项/);
+});
+
+/**
+ * Mount the real panel against a stubbed panel API.
+ *
+ * The mode switch lives in the browser: choosing a tier has to move the date pickers onto that
+ * tier's window. Asserting the host's payload alone cannot see that wiring, so the component itself
+ * is driven here — the same reason `Dropdown` is driven rather than grepped.
+ *
+ * @param payload - what `/api/task-memory/cards` answers with.
+ * @returns the mounted instance, the runtime, and a reader for the requests the panel made.
+ */
+async function mountPanel(payload) {
+  const runtime = createRuntime();
+  const { exports } = await loadClient(runtime.React);
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    const target = String(url);
+    requested.push(target);
+    const body = target.includes("/workspaces")
+      ? { ok: true, workspaces: [{ id: "1", path: "D:\\AI", title: "测试", cards: 1 }] }
+      : { ok: true, ...payload };
+    return {
+      ok: true,
+      status: 200,
+      async json() { return body; },
+    };
+  };
+  const instance = runtime.mount(exports.Panel, {});
+  // The panel loads its workspace list in an effect; let those promises settle, then re-render so the
+  // list request (and its modeRanges) is issued.
+  await settle(instance);
+  return { instance, runtime, requested };
+}
+
+/** Let queued microtasks run, then re-render until no new effect fires. */
+async function settle(instance) {
+  for (let round = 0; round < 6; round += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    instance.render();
+  }
+}
+
+/** The currently rendered date inputs, as `{from, to}` values. */
+function dates(tree) {
+  const inputs = findAll(tree, (node) => node?.props?.type === "date");
+  return { from: inputs[0]?.props?.value, to: inputs[1]?.props?.value };
+}
+
+/**
+ * The mode dropdown element, found by the label the panel gives it.
+ *
+ * The runner does not expand function components, so a `Dropdown` element is still an element here
+ * with its props intact — and `onChange` is exactly the glue under test: "when the control reports a
+ * new mode, do the date pickers follow?". That the control calls `onChange` on a real choice is
+ * covered by the dropdown tests above.
+ *
+ * @param tree - the rendered tree.
+ * @returns the element's props.
+ */
+function modeProps(tree) {
+  const element = findAll(tree, (node) => node?.props?.ariaLabel === "档位筛选")[0];
+  assert.ok(element, "the panel must render a 档位筛选 dropdown");
+  return element.props;
+}
+
+/** The workspace dropdown's props, to prove the two controls stay independent. */
+function workspaceProps(tree) {
+  const element = findAll(tree, (node) => node?.props?.ariaLabel === "选择工作区")[0];
+  assert.ok(element, "the panel must render a workspace dropdown");
+  return element.props;
+}
+
+test("switching the filter mode moves the date range onto that tier's window", async () => {
+  // The windows the host computes. The panel must apply them verbatim rather than re-deriving them.
+  const modeRanges = {
+    default: { from: "2026-10-03", to: "2026-10-10" },
+    all: { from: "", to: "" },
+    recent: { from: "2026-10-03", to: "2026-10-10" },
+    past: { from: "2026-09-10", to: "2026-10-02" },
+    old: { from: "2026-07-12", to: "2026-09-09" },
+    ancient: { from: "2025-10-10", to: "2026-07-11" },
+    forgotten: { from: "", to: "2025-10-09" },
+  };
+  const { instance, requested } = await mountPanel({
+    cards: [], total: 0, shown: 0, days: [],
+    defaultTiers: ["recent"], dateBounds: { from: "", to: "" }, modeRanges,
+  });
+
+  assert.deepEqual(dates(instance.tree), { from: "2026-10-03", to: "2026-10-10" },
+    "the opening view shows the default tier's window, not the whole span");
+
+  // The whole point of the feature: 仅之前 must move the pickers onto that tier, not leave them
+  // spanning everything, or the two filters contradict each other and the list comes back empty.
+  modeProps(instance.tree).onChange("past");
+  instance.render();
+  assert.deepEqual(dates(instance.tree), { from: "2026-09-10", to: "2026-10-02" },
+    "切换档位必须把日期移到该档位的窗口");
+
+  // And the request the panel then issues carries both, so host and browser agree on the slice.
+  await settle(instance);
+  const last = requested.at(-1);
+  assert.match(last, /tiers=past/);
+  assert.match(last, /from=2026-09-10/);
+  assert.match(last, /to=2026-10-02/);
+});
+
+test("全时段 clears the date restriction instead of pinning the observed span", async () => {
+  const modeRanges = {
+    default: { from: "2026-10-03", to: "2026-10-10" },
+    all: { from: "", to: "" },
+    recent: { from: "2026-10-03", to: "2026-10-10" },
+    past: { from: "2026-09-10", to: "2026-10-02" },
+    old: { from: "2026-07-12", to: "2026-09-09" },
+    ancient: { from: "2025-10-10", to: "2026-07-11" },
+    forgotten: { from: "", to: "2025-10-09" },
+  };
+  const { instance } = await mountPanel({
+    cards: [], total: 0, shown: 0, days: [],
+    defaultTiers: ["recent"], dateBounds: { from: "2026-10-09", to: "2026-10-10" }, modeRanges,
+  });
+
+  const button = findAll(instance.tree, (node) => node?.type === "button")
+    .find((node) => textOf(node) === "全时段");
+  assert.ok(button, "there must be a 全时段 control");
+  button.props.onClick?.({ preventDefault() {} });
+  instance.render();
+
+  // A card with no usable date is dropped by any range, so "everything" must mean no range at all.
+  assert.deepEqual(dates(instance.tree), { from: "", to: "" });
+});
+
+test("a mode with no window from the host leaves the range alone", async () => {
+  // Defensive: an older host that does not send `modeRanges` must not produce empty pickers, and it
+  // must not fall back to pinning the observed span either — any range drops a card whose date is
+  // unknown, so the safe fallback is no restriction at all.
+  const { instance } = await mountPanel({
+    cards: [], total: 0, shown: 0, days: [],
+    defaultTiers: ["recent"], dateBounds: { from: "2026-10-09", to: "2026-10-10" },
+  });
+  const before = dates(instance.tree);
+  assert.deepEqual(before, { from: "", to: "" }, "no windows means no restriction, not the span");
+
+  modeProps(instance.tree).onChange("past");
+  instance.render();
+
+  assert.deepEqual(dates(instance.tree), before, "没有窗口可套用时保持原样，而不是清空或猜测日期");
+});
+
+test("an empty result from a filter does not claim the workspace has no cards", async () => {
+  // Switching to a tier that holds nothing is now a normal thing to do, and the old empty state told
+  // the user their memory was empty while the workspace held 14 cards.
+  const { instance } = await mountPanel({
+    cards: [], total: 14, shown: 0, days: [],
+    defaultTiers: ["recent"], dateBounds: { from: "2026-10-09", to: "2026-10-10" },
+    modeRanges: { default: { from: "2026-09-01", to: "2026-09-01" } },
+  });
+  const empty = findAll(instance.tree, byClass("tm-empty")).map(textOf).join(" ");
+  assert.match(empty, /当前筛选下没有卡片/, "must say the filter matched nothing");
+  assert.match(empty, /共有 14 张卡/, "and must reassure that the cards still exist");
+  assert.doesNotMatch(empty, /还没有任务记忆卡/, "must not claim the workspace is empty");
+});
+
+test("a genuinely empty workspace still says so", async () => {
+  const { instance } = await mountPanel({
+    cards: [], total: 0, shown: 0, days: [],
+    defaultTiers: ["recent"], dateBounds: { from: "", to: "" },
+    modeRanges: { default: { from: "", to: "" } },
+  });
+  const empty = findAll(instance.tree, byClass("tm-empty")).map(textOf).join(" ");
+  assert.match(empty, /还没有任务记忆卡/);
+  assert.match(empty, /会被自动记录/, "a new user needs to know how cards appear");
+});
+
+test("switching the filter mode does not touch the workspace selection", async () => {
+  // Both are dropdowns in the same toolbar; a mode change must not be wired to the workspace state.
+  const { instance } = await mountPanel({
+    cards: [], total: 0, shown: 0, days: [],
+    defaultTiers: ["recent"], dateBounds: { from: "", to: "" },
+    modeRanges: { default: { from: "", to: "" }, all: { from: "", to: "" }, past: { from: "2026-09-10", to: "2026-10-02" } },
+  });
+  assert.equal(workspaceProps(instance.tree).value, "D:\\AI", "one workspace is selected");
+  modeProps(instance.tree).onChange("past");
+  instance.render();
+  assert.equal(workspaceProps(instance.tree).value, "D:\\AI", "the workspace is unchanged");
 });
 
 test("the popup uses the host menu tokens and no literal colours", async () => {
